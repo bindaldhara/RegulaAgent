@@ -26,6 +26,13 @@ def resolve_date_phrase(phrase: str | None) -> date:
         return today + timedelta(days=1)
 
 
+def local_clinic_hour(starts_at: datetime) -> int:
+    """Hour-of-day in clinic TZ (IST) for slot matching and display."""
+    if starts_at.tzinfo is None:
+        starts_at = starts_at.replace(tzinfo=TZ)
+    return starts_at.astimezone(TZ).hour
+
+
 def normalize_specialty(value: str | None) -> str | None:
     if not value:
         return None

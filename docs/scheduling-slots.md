@@ -33,7 +33,9 @@ So a slot is **available** iff it exists in `schedule_slots` and no active booki
 
 ## Chat context
 
-Slot and booking requests merge missing **date**, **specialty**, and **doctor** from recent **user** turns only (`entity_context.py`). Assistant messages (e.g. “Dr. Sofia Mehta — 11 AM”) are ignored so a new specialty like “cardiologist” is not pinned to the previous dentist.
+Slot and booking requests merge missing **specialty** and **doctor** from recent **user** turns (`entity_context.py`). Assistant slot lists are **not** used for doctor/specialty (so “cardiologist” is not pinned to a prior dentist reply), but the **date** in the last “Available slots” reply is reused when the user books with only a time (e.g. “book at 2 pm”).
+
+Booking matches `preferred_hour` against each slot’s **IST** hour (`local_clinic_hour`), not raw `datetime.hour` in UTC.
 
 ## Booking
 

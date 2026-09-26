@@ -45,3 +45,23 @@ def test_follow_up_inherits_doctor_and_date() -> None:
     assert enriched.date == "tomorrow"
     assert enriched.preferred_hour == 11
     assert enriched.specialty == "cardiology"
+
+
+def test_book_follow_up_inherits_date_from_slot_list() -> None:
+    entities = ExtractedEntities(preferred_hour=14)
+    history = [
+        {"role": "user", "content": "What are the slots available for Dr. Ana Rivera?"},
+        {
+            "role": "assistant",
+            "content": (
+                "Available slots:\n\n1. Dr. Ana Rivera — 2026-09-27 11 AM IST\n"
+                "2. Dr. Ana Rivera — 2026-09-27 2 PM IST"
+            ),
+        },
+    ]
+    enriched = enrich_booking_entities(
+        entities, "Okay, then book the appointment at 2 pm.", history
+    )
+    assert enriched.doctor_name == "Dr. Ana Rivera"
+    assert enriched.date == "2026-09-27"
+    assert enriched.preferred_hour == 14

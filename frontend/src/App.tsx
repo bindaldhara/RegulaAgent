@@ -1,18 +1,19 @@
 import { motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { runAgent } from "./api/agent";
-import { fetchMe, signOut } from "./api/auth";
+import { signOut } from "./api/auth";
 import { AmbientBackground } from "./components/AmbientBackground";
 import { ChatPanel } from "./components/ChatPanel";
 import { HeroStrip } from "./components/HeroStrip";
 import { LoginPanel } from "./components/LoginPanel";
 import { RuntimePanel } from "./components/RuntimePanel";
 import { SiteHeader } from "./components/SiteHeader";
-import { clearAccessToken, getAccessToken } from "./lib/authStorage";
+import { clearAccessToken } from "./lib/authStorage";
+import { supabase } from "./lib/supabase";
 import { profileNameWithContact } from "./lib/profileContact";
 import { fadeUp, staggerContainer } from "./motion/presets";
 import type { PatientProfile } from "./types/auth";
-import type { AgentRunResponse, ChatMessage, WorkflowStep } from "./types/agent";
+import type { AgentRunResponse, ChatHistoryTurn, ChatMessage, WorkflowStep } from "./types/agent";
 
 function newId() {
   return crypto.randomUUID();
@@ -20,8 +21,6 @@ function newId() {
 
 export default function App() {
   const [patient, setPatient] = useState<PatientProfile | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -31,20 +30,37 @@ export default function App() {
   const [currentStep, setCurrentStep] = useState<WorkflowStep | undefined>();
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) {
-      setAuthLoading(false);
-      return;
+    clearAccessToken();
+    setPatient(null);
+    if (supabase) {
+      void supabase.auth.signOut({ scope: "local" });
     }
-    fetchMe()
-      .then(setPatient)
-      .catch(() => setPatient(null))
-      .finally(() => setAuthLoading(false));
   }, []);
+
+  const chatHistory: ChatHistoryTurn[] = messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
+  const applyAgentResponse = useCallback((response: AgentRunResponse) => {
+      setConversationId(response.conversation_id);
+      setLastRun(response);
+      setCurrentStep(response.current_step);
+      setMessages((prev) => [
+        ...prev,
+        { id: newId(), role: "assistant", content: response.reply, runId: response.run_id },
+      ]);
+    },
+    [],
+  );
 
   const sendMessage = useCallback(async () => {
     const text = draft.trim();
     if (!text || loading) return;
+    if (!patient) {
+      setError("Sign in to send messages.");
+      return;
+    }
 
     setError(null);
     setDraft("");
@@ -56,26 +72,88 @@ export default function App() {
       const response = await runAgent({
         message: text,
         conversation_id: conversationId,
-        chat_history: [
-          ...messages.map((m) => ({ role: m.role, content: m.content })),
-          { role: "user", content: text },
-        ],
+        chat_history: [...chatHistory, { role: "user", content: text }],
       });
-
-      setConversationId(response.conversation_id);
-      setLastRun(response);
-      setCurrentStep(response.current_step);
-
-      setMessages((prev) => [
-        ...prev,
-        { id: newId(), role: "assistant", content: response.reply, runId: response.run_id },
-      ]);
+      applyAgentResponse(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
     }
-  }, [conversationId, draft, loading]);
+  }, [applyAgentResponse, chatHistory, conversationId, draft, loading, patient]);
+
+  const handleVoiceTurn = useCallback(
+    (payload: {
+      userMessage: string;
+      reply: string;
+      conversationId?: string;
+      run?: Partial<AgentRunResponse>;
+    }) => {
+      setMessages((prev) => {
+        let next = prev;
+        if (payload.userMessage) {
+          const last = next[next.length - 1];
+          const hasUser = last?.role === "user" && last.content === payload.userMessage;
+          next = hasUser
+            ? next
+            : [...next, { id: newId(), role: "user" as const, content: payload.userMessage }];
+        }
+        const lastAfter = next[next.length - 1];
+        if (lastAfter?.role === "assistant" && lastAfter.content === payload.reply) {
+          return next;
+        }
+        return [...next, { id: newId(), role: "assistant" as const, content: payload.reply }];
+      });
+      if (payload.conversationId) {
+        setConversationId(payload.conversationId);
+      }
+      const voiceRun = payload.run;
+      const hasRuntimeUpdate =
+        voiceRun &&
+        (voiceRun.run_id ||
+          voiceRun.policy ||
+          voiceRun.intent?.intent ||
+          voiceRun.proposed_action ||
+          voiceRun.tool_result);
+      if (hasRuntimeUpdate && voiceRun) {
+        const patch = Object.fromEntries(
+          Object.entries(voiceRun).filter(([, v]) => v !== undefined && v !== null),
+        ) as Partial<AgentRunResponse>;
+        setLastRun((prev) => {
+          const base = prev ?? {
+            conversation_id: payload.conversationId ?? "",
+            run_id: voiceRun.run_id ?? `voice-${crypto.randomUUID()}`,
+            reply: payload.reply,
+            current_step: voiceRun.current_step ?? "response",
+            identity_status: patient ? "verified" : "unverified",
+            consent_status: patient?.consent_granted ? "granted" : "pending",
+            handoff_state: "none",
+            audit_event_count: 0,
+            intent: null,
+            policy: null,
+            proposed_action: null,
+            tool_result: null,
+          };
+          return {
+            ...base,
+            ...patch,
+            reply: payload.reply,
+            run_id: voiceRun.run_id ?? base.run_id,
+            identity_status:
+              voiceRun.identity_status ?? base.identity_status ?? (patient ? "verified" : "unverified"),
+            consent_status:
+              voiceRun.consent_status ??
+              base.consent_status ??
+              (patient?.consent_granted ? "granted" : "pending"),
+          } as AgentRunResponse;
+        });
+      }
+      if (payload.run?.current_step) {
+        setCurrentStep(payload.run.current_step);
+      }
+    },
+    [patient],
+  );
 
   const startNewConversation = useCallback(() => {
     setMessages([]);
@@ -104,11 +182,7 @@ export default function App() {
     });
   };
 
-  const headerLabel = patient
-    ? profileNameWithContact(patient)
-    : authLoading
-      ? "Checking session…"
-      : "Guest · sign in to book";
+  const headerLabel = patient ? profileNameWithContact(patient) : "Guest · sign in to book";
 
   return (
     <div className="relative min-h-screen text-zinc-100">
@@ -140,6 +214,11 @@ export default function App() {
             loading={loading}
             error={error}
             currentStep={currentStep}
+            signedIn={Boolean(patient)}
+            consentGranted={Boolean(patient?.consent_granted)}
+            conversationId={conversationId}
+            chatHistory={chatHistory}
+            onVoiceTurn={handleVoiceTurn}
           />
         </motion.div>
 

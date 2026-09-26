@@ -12,8 +12,7 @@ See [docs/day-1.md](docs/day-1.md). Book/cancel via chat after sign-in + consent
 - FastAPI backend, React + Vite + Tailwind scaffold
 - **Supabase Auth** (frontend) + JWT verification on the API; **Supabase Postgres** via `DATABASE_URL` and **psycopg** + raw SQL (`backend/db/schema.sql`)
 - LangGraph workflow: Intent → Identity → Consent → Action → Policy → Tool → Result validation → Response → Audit
-- Structured intent classification (`BOOK_APPOINTMENT`, `CANCEL_APPOINTMENT`, `SEARCH_DOCTOR`, `CHECK_APPOINTMENT`, `UNKNOWN`) with entity extraction
-- Mock intent provider for local dev; OpenRouter when `AGENT_PROVIDER=openrouter`
+- Structured intent classification with entity extraction — **LLM via OpenRouter** by default (`AGENT_PROVIDER=auto`); mock regex for tests — see [docs/intent.md](docs/intent.md)
 
 ## Quick start
 
@@ -36,4 +35,6 @@ make start                  # Docker: API + chat UI (http://localhost:5173)
 ```
 
 Configure Supabase first: [docs/supabase.md](docs/supabase.md).
+
+Optional voice: [docs/voice.md](docs/voice.md) (LiveKit + `voice_worker`).
 

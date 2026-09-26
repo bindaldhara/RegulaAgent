@@ -26,6 +26,7 @@ def _initial_state(request: AgentRunRequest, conversation_id: uuid.UUID, run_id:
         identity_verified_input=request.identity_verified,
         consent_granted_input=request.consent_granted,
         chat_history=[{"role": t.role, "content": t.content} for t in request.chat_history],
+        voice_mode=request.voice_mode,
         handoff_state=HandoffState.NONE,
         current_step=WorkflowStep.INTENT,
         audit_events=[],
@@ -39,7 +40,7 @@ def run_agent(request: AgentRunRequest, persist: bool = True) -> AgentRunRespons
     graph = get_agent_workflow()
     final_state: dict[str, Any] = graph.invoke(_initial_state(request, conversation_id, run_id))
 
-    if persist and get_settings().postgres_host:
+    if persist and not request.voice_mode and get_settings().postgres_host:
         try:
             persist_agent_run(conversation_id, run_id, request.message, final_state)
         except Exception:

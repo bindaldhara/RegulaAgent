@@ -90,7 +90,7 @@ export function RuntimePanel({ lastRun, loading, patient }: RuntimePanelProps) {
 
       {!loading && lastRun && (
         <motion.div
-          key={lastRun.run_id}
+          key={lastRun.run_id ?? lastRun.reply}
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0 }}
@@ -102,8 +102,8 @@ export function RuntimePanel({ lastRun, loading, patient }: RuntimePanelProps) {
               <p className="mt-1 text-sm text-zinc-300">
                 {patient ? profileNameWithContact(patient) : "Guest session"}
               </p>
-              <p className="mt-0.5 text-[10px] text-zinc-600" title={lastRun.run_id}>
-                Ref {lastRun.run_id.slice(0, 8)}
+              <p className="mt-0.5 text-[10px] text-zinc-600" title={lastRun.run_id ?? ""}>
+                {lastRun.run_id ? `Ref ${lastRun.run_id.slice(0, 8)}` : "Voice session"}
               </p>
             </div>
 
@@ -114,7 +114,7 @@ export function RuntimePanel({ lastRun, loading, patient }: RuntimePanelProps) {
               animate="visible"
             >
               <Metric label="Intent" className="sm:col-span-2">
-                {lastRun.intent ? (
+                {lastRun.intent?.intent ? (
                   <div>
                     <p className="text-sm font-medium leading-snug text-zinc-100">
                       {formatIntent(lastRun.intent.intent)}

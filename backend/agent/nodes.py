@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.intent_classifier import classify_intent
+from agent.intent_classifier import classify_intent, normalize_appointment_ref
 from config import get_settings
 from policy.engine import PolicyEngine
 from schemas.agent import PolicyDecision, ProposedAction
@@ -21,6 +21,7 @@ from schemas.intent import IntentClassification
 from services.datetime_display import format_appointment_time
 from services.doctor_matching import resolve_doctor_external_id
 from services.entity_context import enrich_booking_entities
+from services.scheduling_intent import refine_intent_from_history
 from tools.router import ToolExecutionError, execute_tool
 
 _POLICY = PolicyEngine()
@@ -35,12 +36,14 @@ def _append_audit(state: dict[str, Any], event_type: str, payload: dict[str, Any
 
 def intent_node(state: dict[str, Any]) -> dict[str, Any]:
     message = state["user_message"]
-    classification = classify_intent(message, get_settings())
+    history = state.get("chat_history")
+    classification = classify_intent(message, get_settings(), chat_history=history)
+    classification = refine_intent_from_history(classification, message, history)
     if classification.intent in (Intent.BOOK_APPOINTMENT, Intent.LIST_AVAILABLE_SLOTS):
         entities = enrich_booking_entities(
             classification.entities,
             message,
-            state.get("chat_history"),
+            history,
         )
         classification = classification.model_copy(update={"entities": entities})
     return {
@@ -146,7 +149,11 @@ def _intent_to_action(intent: IntentClassification) -> ProposedAction | None:
     if intent.intent == Intent.CANCEL_APPOINTMENT:
         return ProposedAction(
             tool_name="cancel_appointment",
-            arguments={"appointment_id": entities.appointment_id},
+            arguments={
+                "appointment_id": normalize_appointment_ref(entities.appointment_id),
+                "doctor_name": entities.doctor_name,
+                "date": entities.date,
+            },
             risk_level=RiskLevel.MEDIUM,
         )
     if intent.intent == Intent.CHECK_APPOINTMENT:
@@ -263,7 +270,7 @@ def _format_tool_reply(tool_name: str, data: dict[str, Any]) -> str:
             return "No open slots for that date."
         lines = [
             f"{i}. {s['doctor_name']} — {format_appointment_time(s['starts_at'])}"
-            for i, s in enumerate(slots[:5], 1)
+            for i, s in enumerate(slots, 1)
         ]
         return "Available slots:\n\n" + "\n".join(lines)
     if tool_name == "book_appointment":

@@ -1,0 +1,343 @@
+"""
+LiveKit voice worker for RegulaAgent.
+
+Committed user turns → POST /api/v1/agent/run → TTS reply.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+from dotenv import load_dotenv
+from livekit import rtc
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    JobContext,
+    JobProcess,
+    UserInputTranscribedEvent,
+    cli,
+    room_io,
+)
+from livekit.agents.llm import StopResponse
+from livekit.plugins import silero
+
+from audio_providers import build_stt_tts
+from speech_text import text_for_tts
+
+_root_env = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_root_env)
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("regula-voice")
+VOICE_WORKER_BUILD = "2026-03-26-http-lifecycle"
+REGULA_BACKEND_URL = os.getenv("REGULA_BACKEND_URL", "http://localhost:8000").rstrip("/")
+DATA_TOPIC = "regula.agent"
+VOICE_GREETING = (
+    "Hey! I'm Regula, your assistant. How can I help you today?"
+)
+VOICE_FILLER = os.getenv("VOICE_FILLER", "One moment.")
+VOICE_HISTORY_TURNS = int(os.getenv("VOICE_HISTORY_TURNS", "8"))
+_HTTP_TIMEOUT = float(os.getenv("VOICE_HTTP_TIMEOUT", "60"))
+
+
+def prewarm(proc: JobProcess) -> None:
+    """Build STT/TTS once per worker process (avoids blocking the job event loop)."""
+    proc.userdata["vad"] = silero.VAD.load()
+    proc.userdata["stt"], proc.userdata["tts"] = build_stt_tts()
+
+
+def _room_ready(room: rtc.Room) -> bool:
+    return (
+        room.connection_state == rtc.ConnectionState.CONN_CONNECTED
+        and room.local_participant is not None
+    )
+
+
+async def _publish_data(room: rtc.Room, payload: dict[str, Any], *, reliable: bool = True) -> None:
+    if not _room_ready(room):
+        return
+    body = json.dumps(payload).encode("utf-8")
+    try:
+        await room.local_participant.publish_data(
+            body,
+            reliable=reliable,
+            topic=DATA_TOPIC,
+        )
+    except Exception as exc:
+        logger.debug("publish_data skipped (%s): %s", payload.get("type"), exc)
+
+
+async def _publish_greeting_to_ui(room: rtc.Room) -> None:
+    payload = {"type": "agent_greeting", "reply": VOICE_GREETING}
+    for delay in (0.0, 1.5):
+        if delay:
+            await asyncio.sleep(delay)
+        await _publish_data(room, payload)
+
+
+def _fire_say(session: AgentSession, text: str, **kwargs: Any) -> None:
+    handle = session.say(text, **kwargs)
+    if asyncio.iscoroutine(handle):
+        asyncio.create_task(handle)
+
+
+async def _play_opening_greeting(session: AgentSession, room: rtc.Room) -> None:
+    logger.info("Playing opening greeting")
+    asyncio.create_task(_publish_greeting_to_ui(room))
+    handle = session.say(VOICE_GREETING, allow_interruptions=False)
+    if asyncio.iscoroutine(handle):
+        await handle
+
+
+def _make_http_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=_HTTP_TIMEOUT,
+        limits=httpx.Limits(max_keepalive_connections=4, max_connections=8),
+    )
+
+
+class RegulaSessionState:
+    def __init__(
+        self,
+        session_meta: dict[str, Any],
+        room: rtc.Room,
+        http: httpx.AsyncClient,
+    ) -> None:
+        self.meta = session_meta
+        self.room = room
+        self._http = http
+        self._busy = False
+
+    def _http_client(self) -> httpx.AsyncClient:
+        if self._http.is_closed:
+            logger.warning("recreating closed Regula HTTP client")
+            self._http = _make_http_client()
+        return self._http
+
+    async def on_transcript_ui(self, event: UserInputTranscribedEvent) -> None:
+        text = (event.transcript or "").strip()
+        if not text:
+            return
+        await _publish_data(
+            self.room,
+            {"type": "transcript", "text": text, "final": event.is_final},
+            reliable=False,
+        )
+
+    async def on_committed_turn(self, session: AgentSession, text: str) -> None:
+        text = text.strip()
+        if not text or self._busy:
+            return
+
+        self._busy = True
+        t0 = time.perf_counter()
+        try:
+            asyncio.create_task(
+                _publish_data(
+                    self.room,
+                    {"type": "transcript", "text": text, "final": True},
+                    reliable=False,
+                )
+            )
+            if VOICE_FILLER:
+                _fire_say(
+                    session,
+                    VOICE_FILLER,
+                    allow_interruptions=True,
+                    add_to_chat_ctx=False,
+                )
+
+            reply, run = await self._call_regula(text)
+            api_ms = (time.perf_counter() - t0) * 1000
+            spoken = text_for_tts(reply)
+
+            turn_payload = {
+                "type": "agent_turn",
+                "user_message": text,
+                "reply": reply,
+                "run_id": run.get("run_id"),
+                "conversation_id": run.get("conversation_id"),
+                "policy": run.get("policy"),
+                "intent": run.get("intent"),
+                "current_step": run.get("current_step"),
+                "proposed_action": run.get("proposed_action"),
+                "tool_result": run.get("tool_result"),
+                "identity_status": run.get("identity_status"),
+                "consent_status": run.get("consent_status"),
+            }
+
+            async def _publish_turn() -> None:
+                await _publish_data(self.room, turn_payload)
+
+            await asyncio.gather(
+                _publish_turn(),
+                self._speak(session, spoken),
+            )
+            logger.info(
+                "voice turn done api_ms=%.0f spoken_chars=%d total_ms=%.0f",
+                api_ms,
+                len(spoken),
+                (time.perf_counter() - t0) * 1000,
+            )
+        except Exception as exc:
+            logger.exception("voice turn failed: %s", exc)
+            try:
+                await self._speak(
+                    session,
+                    "Something went wrong while scheduling. Please try chat or try again.",
+                    allow_interruptions=False,
+                )
+            except Exception:
+                logger.debug("could not play error prompt after disconnect")
+        finally:
+            self._busy = False
+
+    async def _speak(self, session: AgentSession, text: str, **kwargs: Any) -> None:
+        say_opts = {"add_to_chat_ctx": True, "allow_interruptions": True}
+        say_opts.update(kwargs)
+        handle = session.say(text, **say_opts)
+        if asyncio.iscoroutine(handle):
+            handle = await handle
+        if handle is not None and hasattr(handle, "wait_for_playout"):
+            if os.getenv("VOICE_WAIT_PLAYOUT", "").lower() in ("1", "true", "yes"):
+                await handle.wait_for_playout()
+
+    async def _call_regula(self, user_message: str) -> tuple[str, dict[str, Any]]:
+        access_token = self.meta.get("access_token")
+        if not access_token:
+            return (
+                "Please sign in on the website before booking or canceling.",
+                {},
+            )
+
+        history = list(self.meta.get("chat_history") or [])
+        if VOICE_HISTORY_TURNS > 0:
+            history = history[-VOICE_HISTORY_TURNS:]
+
+        payload: dict[str, Any] = {
+            "message": user_message,
+            "chat_history": history,
+            "voice_mode": True,
+        }
+        conversation_id = self.meta.get("conversation_id")
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        client = self._http_client()
+        response = await client.post(
+            f"{REGULA_BACKEND_URL}/api/v1/agent/run",
+            headers=headers,
+            json=payload,
+        )
+        if response.status_code >= 400:
+            logger.warning("Regula API %s: %s", response.status_code, response.text[:300])
+            return (
+                "I could not reach the scheduling service. Check that the API is running.",
+                {},
+            )
+        data = response.json()
+
+        reply = str(data.get("reply") or "Done.")
+        new_conversation_id = data.get("conversation_id")
+        if new_conversation_id:
+            self.meta["conversation_id"] = new_conversation_id
+
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": reply})
+        self.meta["chat_history"] = history[-20:]
+        return reply, data
+
+
+class RegulaVoiceAgent(Agent):
+    def __init__(self, state: RegulaSessionState) -> None:
+        super().__init__(
+            instructions="RegulaAgent voice scheduling. The server handles booking responses.",
+        )
+        self._state = state
+        self._greeted = False
+
+    async def on_enter(self) -> None:
+        if self._greeted:
+            return
+        self._greeted = True
+        await _play_opening_greeting(self.session, self._state.room)
+
+    async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
+        text = (new_message.text_content or "").strip()
+        if not text:
+            raise StopResponse()
+        await self._state.on_committed_turn(self.session, text)
+        raise StopResponse()
+
+
+server = AgentServer(setup_fnc=prewarm)
+
+
+@server.rtc_session(agent_name=os.getenv("LIVEKIT_AGENT_NAME", "regula-voice"))
+async def entrypoint(ctx: JobContext) -> None:
+    ctx.log_context_fields = {"room": ctx.room.name}
+    try:
+        session_meta = json.loads(ctx.job.metadata or "{}")
+    except json.JSONDecodeError:
+        session_meta = {}
+
+    stt = ctx.proc.userdata["stt"]
+    tts = ctx.proc.userdata["tts"]
+    vad = ctx.proc.userdata["vad"]
+
+    agent_name = os.getenv("LIVEKIT_AGENT_NAME", "regula-voice")
+    logger.info(
+        "Regula voice worker joining room=%s agent_name=%s backend=%s build=%s",
+        ctx.room.name,
+        agent_name,
+        REGULA_BACKEND_URL,
+        VOICE_WORKER_BUILD,
+    )
+
+    http = _make_http_client()
+    state = RegulaSessionState(session_meta, ctx.room, http)
+
+    async def _close_http() -> None:
+        if not http.is_closed:
+            await http.aclose()
+
+    ctx.add_shutdown_callback(_close_http)
+
+    session = AgentSession(
+        vad=vad,
+        stt=stt,
+        tts=tts,
+        llm=None,
+    )
+
+    @session.on("user_input_transcribed")
+    def _on_user_input_transcribed(event: UserInputTranscribedEvent) -> None:
+        asyncio.create_task(state.on_transcript_ui(event))
+
+    await ctx.connect()
+    await session.start(
+        agent=RegulaVoiceAgent(state),
+        room=ctx.room,
+        room_options=room_io.RoomOptions(
+            close_on_disconnect=False,
+            delete_room_on_close=False,
+        ),
+    )
+
+
+if __name__ == "__main__":
+    cli.run_app(server)

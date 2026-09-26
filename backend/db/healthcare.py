@@ -7,9 +7,10 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from db.connection import get_connection
-from services.healthcare_store import normalize_specialty, resolve_date_phrase
+from services.healthcare_store import local_clinic_hour, normalize_specialty, resolve_date_phrase
 from services.datetime_display import format_appointment_time
 from services.healthcare_store import TZ
+from services.doctor_matching import resolve_doctor_external_id
 from services.scheduling_slots import SEED_DOCTORS, VirtualSlot, iter_slots_for_date, parse_slot_id
 
 
@@ -312,20 +313,27 @@ def book_appointment(
             except ValueError:
                 chosen = None
 
+    def _slot_matches_hour(slot: VirtualSlot, hour: int) -> bool:
+        return local_clinic_hour(slot.starts_at) == hour
+
     if chosen is None and doctor_external_id and preferred_hour is not None:
-        hour_slots = [
-            s
-            for s in list_available_slots(specialty, doctor_external_id, date_phrase)
-            if s.starts_at.hour == preferred_hour
-        ]
+        available = list_available_slots(specialty, doctor_external_id, date_phrase)
+        hour_slots = [s for s in available if _slot_matches_hour(s, preferred_hour)]
         if not hour_slots:
-            raise ValueError("That time is not offered for this doctor. Choose 9 AM, 11 AM, or 2 PM IST.")
+            if available:
+                labels = ", ".join(
+                    format_appointment_time(s.starts_at).split(" ", 1)[1] for s in available
+                )
+                raise ValueError(
+                    f"That time is not offered for this doctor on that date. Open times: {labels}."
+                )
+            raise ValueError("No open slots for this doctor on that date.")
         chosen = hour_slots[0]
 
     if chosen is None and doctor_external_id:
         doctor_slots = list_available_slots(specialty, doctor_external_id, date_phrase)
         if preferred_hour is not None:
-            doctor_slots = [s for s in doctor_slots if s.starts_at.hour == preferred_hour]
+            doctor_slots = [s for s in doctor_slots if _slot_matches_hour(s, preferred_hour)]
         if not doctor_slots:
             name = next((n for e, n, _ in SEED_DOCTORS if e == doctor_external_id), "this doctor")
             if preferred_hour is not None:
@@ -336,7 +344,7 @@ def book_appointment(
     if chosen is None:
         slots = list_available_slots(specialty, doctor_external_id, date_phrase)
         if preferred_hour is not None:
-            slots = [s for s in slots if s.starts_at.hour == preferred_hour]
+            slots = [s for s in slots if _slot_matches_hour(s, preferred_hour)]
         if not slots:
             raise ValueError("No available slots for the requested specialty, doctor, and time.")
         chosen = slots[0]
@@ -377,24 +385,76 @@ def book_appointment(
     }
 
 
+def _select_booked_appointment_row(
+    cur: Any,
+    *,
+    patient_uuid: uuid.UUID,
+    appointment_ref: str | None,
+    doctor_external_id: str | None,
+    target_date: date | None,
+) -> tuple[str, uuid.UUID, str] | None:
+    if appointment_ref:
+        cur.execute(
+            """
+            SELECT a.external_ref, a.patient_id, a.status, a.scheduled_at, d.external_id
+            FROM appointments a
+            JOIN doctors d ON d.id = a.doctor_id
+            WHERE a.external_ref = %s
+            """,
+            (appointment_ref.lower(),),
+        )
+        rows = [cur.fetchone()]
+    else:
+        cur.execute(
+            """
+            SELECT a.external_ref, a.patient_id, a.status, a.scheduled_at, d.external_id
+            FROM appointments a
+            JOIN doctors d ON d.id = a.doctor_id
+            WHERE a.patient_id = %s AND a.status = 'booked'
+            ORDER BY a.scheduled_at ASC, a.created_at DESC
+            """,
+            (patient_uuid,),
+        )
+        rows = cur.fetchall()
+
+    candidates: list[tuple[str, uuid.UUID, str]] = []
+    for row in rows:
+        if row is None:
+            continue
+        ref, owner_id, status, scheduled_at, doc_ext = row
+        if status != "booked" or owner_id != patient_uuid:
+            continue
+        if doctor_external_id and doc_ext != doctor_external_id:
+            continue
+        if target_date is not None:
+            appt_date = scheduled_at.astimezone(TZ).date()
+            if appt_date != target_date:
+                continue
+        candidates.append((ref, owner_id, status))
+
+    if not candidates:
+        return None
+    if len(candidates) > 1 and not appointment_ref:
+        raise ValueError(
+            "Multiple booked appointments match. Say the reference (for example appt6) or be more specific."
+        )
+    return candidates[0]
+
+
 def cancel_appointment(
     *,
     patient_external_id: str,
     appointment_ref: str | None,
+    doctor_name: str | None = None,
+    date_phrase: str | None = None,
 ) -> dict[str, Any]:
     patient_uuid = _ensure_patient(patient_external_id)
+    doctor_external_id = resolve_doctor_external_id(doctor_name) if doctor_name else None
+    target_date = resolve_date_phrase(date_phrase) if date_phrase else None
+
     with get_connection() as conn:
         with conn.cursor() as cur:
-            if appointment_ref:
-                cur.execute(
-                    """
-                    SELECT external_ref, patient_id, status
-                    FROM appointments
-                    WHERE external_ref = %s
-                    """,
-                    (appointment_ref.lower(),),
-                )
-            else:
+            if not appointment_ref and not doctor_external_id and target_date is None:
                 cur.execute(
                     """
                     SELECT external_ref, patient_id, status
@@ -405,7 +465,16 @@ def cancel_appointment(
                     """,
                     (patient_uuid,),
                 )
-            row = cur.fetchone()
+                legacy = cur.fetchone()
+                row = legacy[:3] if legacy else None
+            else:
+                row = _select_booked_appointment_row(
+                    cur,
+                    patient_uuid=patient_uuid,
+                    appointment_ref=appointment_ref,
+                    doctor_external_id=doctor_external_id,
+                    target_date=target_date,
+                )
             if row is None:
                 raise ValueError("Appointment not found.")
             ref, owner_id, status = row

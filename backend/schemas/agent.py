@@ -38,6 +38,19 @@ class AgentRunRequest(BaseModel):
     identity_verified: bool = False
     consent_granted: bool = False
     chat_history: list[ChatHistoryTurn] = Field(default_factory=list)
+    voice_mode: bool = False
+
+
+class VoiceTokenRequest(BaseModel):
+    conversation_id: UUID | None = None
+    chat_history: list[ChatHistoryTurn] = Field(default_factory=list)
+
+
+class VoiceTokenResponse(BaseModel):
+    token: str
+    url: str
+    room_name: str
+    agent_metadata_preview: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentRunResponse(BaseModel):

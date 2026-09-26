@@ -57,6 +57,8 @@ class BookAppointmentResponse(BaseModel):
 class CancelAppointmentRequest(BaseModel):
     patient_id: str
     appointment_id: str | None = None
+    doctor_name: str | None = None
+    date: str | None = None
 
 
 class CancelAppointmentResponse(BaseModel):

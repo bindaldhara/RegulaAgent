@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from agent.intent_classifier import _doctor_name_from_message, _extract_date, _extract_specialty
+from agent.intent_classifier import _doctor_name_from_message, _extract_specialty
+from services.scheduling_intent import extract_date_phrase
 from schemas.intent import ExtractedEntities
 from services.doctor_matching import extract_preferred_hour
 from services.scheduling_slots import SEED_DOCTORS
+
+
+def _date_from_recent_assistant_slots(history: list[dict[str, Any]]) -> str | None:
+    for turn in reversed(history[-8:]):
+        if turn.get("role") != "assistant":
+            continue
+        content = (turn.get("content") or "").strip()
+        if "Available slots" not in content and "—" not in content:
+            continue
+        match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", content)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _user_history_blob(current_message: str, history: list[dict[str, Any]]) -> str:
@@ -64,7 +79,11 @@ def enrich_booking_entities(
     if doctor_name and resolved_specialty and not _doctor_matches_specialty(doctor_name, resolved_specialty):
         updates["doctor_name"] = None
     if not entities.date:
-        date_phrase = _extract_date(current_message) or _extract_date(user_blob)
+        date_phrase = (
+            extract_date_phrase(current_message)
+            or extract_date_phrase(user_blob)
+            or _date_from_recent_assistant_slots(history)
+        )
         if date_phrase:
             updates["date"] = date_phrase
 

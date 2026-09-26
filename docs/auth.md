@@ -2,6 +2,12 @@
 
 Identity for the agent comes from the **Supabase session** (JWT), not from chat input or sidebar flags.
 
+## Session behavior
+
+- The app **does not** restore a previous login on page load (no sticky “test user”).
+- Supabase auth uses **session storage only** (`persistSession: false`); each visit starts signed out until the user signs in again.
+- Chat, voice, and scheduling tools require an active sign-in for that tab.
+
 ## Flow
 
 1. User signs up or signs in in the UI (Supabase Auth).

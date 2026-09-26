@@ -7,7 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    agent_provider: str = "mock"
+    # mock = regex (tests); openrouter = LLM; auto = LLM when OPENROUTER_API_KEY is set
+    agent_provider: str = "auto"
 
     supabase_url: str = ""
     supabase_jwt_secret: str = ""
@@ -16,6 +17,11 @@ class Settings(BaseSettings):
     openrouter_model: str = "openai/gpt-4o-mini"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_app_url: str = "http://localhost:5173"
+
+    livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+    livekit_agent_name: str = "regula-voice"
 
     # Optional single URI. If password contains +, @, /, etc., use POSTGRES_* below instead.
     database_url: str | None = None
@@ -60,6 +66,14 @@ class Settings(BaseSettings):
     @property
     def supabase_configured(self) -> bool:
         return bool(self.supabase_url.strip())
+
+    @property
+    def livekit_configured(self) -> bool:
+        return bool(
+            self.livekit_url.strip()
+            and self.livekit_api_key.strip()
+            and self.livekit_api_secret.strip()
+        )
 
 
 @lru_cache

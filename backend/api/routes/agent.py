@@ -21,4 +21,4 @@ def agent_run(
                 "consent_granted": session.consent_granted,
             }
         )
-    return run_agent(request, persist=True)
+    return run_agent(request, persist=not request.voice_mode)

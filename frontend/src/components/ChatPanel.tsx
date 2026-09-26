@@ -1,6 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef } from "react";
-import type { ChatMessage, WorkflowStep } from "../types/agent";
+import type { AgentRunResponse, ChatHistoryTurn, ChatMessage, WorkflowStep } from "../types/agent";
+import { VoicePanel } from "./VoicePanel";
 import { slideFromLeft, slideFromRight, springSnappy } from "../motion/presets";
 import { GlassCard } from "./GlassCard";
 import { PromptPills } from "./PromptPills";
@@ -15,6 +16,16 @@ interface ChatPanelProps {
   loading: boolean;
   error: string | null;
   currentStep?: WorkflowStep;
+  signedIn: boolean;
+  consentGranted: boolean;
+  conversationId: string | null;
+  chatHistory: ChatHistoryTurn[];
+  onVoiceTurn: (payload: {
+    userMessage: string;
+    reply: string;
+    conversationId?: string;
+    run?: Partial<AgentRunResponse>;
+  }) => void;
 }
 
 export function ChatPanel({
@@ -25,6 +36,11 @@ export function ChatPanel({
   loading,
   error,
   currentStep,
+  signedIn,
+  consentGranted,
+  conversationId,
+  chatHistory,
+  onVoiceTurn,
 }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const reduce = useReducedMotion();
@@ -48,7 +64,7 @@ export function ChatPanel({
 
       <WorkflowPills currentStep={currentStep} />
 
-      <PromptPills onSelect={onDraftChange} disabled={loading} />
+      <PromptPills onSelect={onDraftChange} disabled={loading || !signedIn} />
 
       <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
         <AnimatePresence mode="popLayout">
@@ -60,7 +76,9 @@ export function ChatPanel({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              No messages yet — pick a pill above or send your own.
+              {signedIn
+                ? "No messages yet — pick a pill above or send your own."
+                : "Sign in on the left to chat or use voice."}
             </motion.p>
           )}
           {messages.map((msg) => (
@@ -103,24 +121,35 @@ export function ChatPanel({
       </AnimatePresence>
 
       <form onSubmit={handleSubmit} className="border-t border-white/5 p-4">
-        <div className="flex gap-2">
-          <input
-            value={draft}
-            onChange={(e) => onDraftChange(e.target.value)}
-            disabled={loading}
-            placeholder="Describe what you need…"
-            className="min-w-0 flex-1 rounded-full border border-white/10 bg-black/50 px-5 py-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-violet-400/40 disabled:opacity-50"
-          />
-          <motion.button
-            type="submit"
-            disabled={loading || !draft.trim()}
-            className="ms-gradient-cta rounded-full px-6 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-            whileHover={{ scale: 1.03 }}
-            whileTap={{ scale: 0.97 }}
-          >
-            Send →
-          </motion.button>
-        </div>
+        <VoicePanel
+          signedIn={signedIn}
+          consentGranted={consentGranted}
+          conversationId={conversationId}
+          chatHistory={chatHistory}
+          onAgentTurn={onVoiceTurn}
+          disabled={loading}
+          footer={(voiceControl) => (
+            <div className="flex gap-2">
+              <input
+                value={draft}
+                onChange={(e) => onDraftChange(e.target.value)}
+                disabled={loading || !signedIn}
+                placeholder={signedIn ? "Describe what you need…" : "Sign in to chat…"}
+                className="min-w-0 flex-1 rounded-full border border-white/10 bg-black/50 px-5 py-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-violet-400/40 disabled:opacity-50"
+              />
+              {voiceControl}
+              <motion.button
+                type="submit"
+                disabled={loading || !signedIn || !draft.trim()}
+                className="ms-gradient-cta shrink-0 rounded-full px-6 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+              >
+                Send →
+              </motion.button>
+            </div>
+          )}
+        />
       </form>
     </GlassCard>
   );

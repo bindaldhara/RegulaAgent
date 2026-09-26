@@ -23,7 +23,7 @@ services:
     env_file:
       - .env
     environment:
-      AGENT_PROVIDER: mock
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-auto}
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
       DATABASE_URL: ${DATABASE_URL:-}
@@ -32,6 +32,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-regula_agent}
       POSTGRES_USER: ${POSTGRES_USER:-regula}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-regula}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_AGENT_NAME: ${LIVEKIT_AGENT_NAME:-regula-voice}
     ports:
       - "8000:8000"
     depends_on:
@@ -57,6 +61,33 @@ services:
       - frontend_node_modules:/app/node_modules
     command: >
       sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - backend
+
+  voice-worker:
+    build:
+      context: .
+      dockerfile: docker/voice.Dockerfile
+    volumes:
+      # Use repo code on disk (restart container after edits; avoids stale COPY cache).
+      - ./voice_worker:/app
+    env_file:
+      - .env
+    environment:
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_AGENT_NAME: ${LIVEKIT_AGENT_NAME:-regula-voice}
+      REGULA_BACKEND_URL: http://backend:8000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      VOICE_OPENAI_API_KEY: ${VOICE_OPENAI_API_KEY:-}
+      VOICE_AUDIO_MODE: ${VOICE_AUDIO_MODE:-free}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      VOICE_GROQ_STT_MODEL: ${VOICE_GROQ_STT_MODEL:-whisper-large-v3-turbo}
+      VOICE_EDGE_TTS_VOICE: ${VOICE_EDGE_TTS_VOICE:-en-US-JennyNeural}
+    restart: unless-stopped
     depends_on:
       - backend
 

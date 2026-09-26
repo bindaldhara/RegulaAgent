@@ -67,6 +67,8 @@ def cancel_appointment(req: CancelAppointmentRequest) -> CancelAppointmentRespon
     data = healthcare_db.cancel_appointment(
         patient_external_id=req.patient_id,
         appointment_ref=req.appointment_id,
+        doctor_name=req.doctor_name,
+        date_phrase=req.date,
     )
     return CancelAppointmentResponse(appointment_id=data["appointment_id"], status=data["status"])
 

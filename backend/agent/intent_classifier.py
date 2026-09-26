@@ -1,16 +1,19 @@
-"""Structured intent classification (mock + OpenRouter LLM)."""
+"""Intent classification: LLM (OpenRouter) with mock regex fallback for tests."""
 
 from __future__ import annotations
 
+import logging
 import re
+from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+logger = logging.getLogger(__name__)
 
 from config import Settings, get_settings
 from schemas.enums import Intent
 from schemas.intent import ExtractedEntities, IntentClassification
 from services.doctor_matching import extract_preferred_hour, resolve_doctor_from_message
+from services.intent_llm import INTENT_SYSTEM, classify_intent_openrouter
+from services.scheduling_intent import extract_date_phrase, is_slots_request
 from services.scheduling_slots import SEED_DOCTORS
 
 _SPECIALTY_MAP = {
@@ -47,6 +50,19 @@ _PROTECTED_DATA_PATTERNS = (
     "another patient",
 )
 
+_APPOINTMENT_REF_RE = re.compile(r"^appt\d+$", re.I)
+
+
+def use_mock_intent_classifier(settings: Settings | None = None) -> bool:
+    cfg = settings or get_settings()
+    mode = cfg.agent_provider.lower().strip()
+    if mode == "mock":
+        return True
+    if mode in ("openrouter", "llm"):
+        return not bool(cfg.openrouter_api_key)
+    # auto
+    return not bool(cfg.openrouter_api_key)
+
 
 def _extract_specialty(text: str) -> str | None:
     lower = text.lower()
@@ -56,26 +72,7 @@ def _extract_specialty(text: str) -> str | None:
     return None
 
 
-def _extract_date(text: str) -> str | None:
-    lower = text.lower()
-    for phrase in ("tomorrow", "today", "next week", "monday", "tuesday", "wednesday", "thursday", "friday"):
-        if phrase in lower:
-            return phrase
-    match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
-    if match:
-        return match.group(1)
-    return None
-
-
 def _doctor_name_from_message(text: str) -> str | None:
-    lower = text.lower()
-    for _, full_name, _ in SEED_DOCTORS:
-        if full_name.lower() in lower:
-            return full_name
-        last = full_name.split()[-1]
-        first = full_name.split()[1] if full_name.startswith("Dr.") else ""
-        if last.lower() in lower and (not first or first.lower() in lower):
-            return full_name
     ext = resolve_doctor_from_message(text)
     if ext:
         for e, name, _ in SEED_DOCTORS:
@@ -88,20 +85,26 @@ def _extract_appointment_id(text: str) -> str | None:
     match = re.search(r"\b(appt\d+)\b", text, re.I)
     if match:
         return match.group(1).lower()
-    match = re.search(r"\b(?:appt|appointment)[\s#-]*([a-z0-9-]+)\b", text, re.I)
+    match = re.search(r"\bappointment\s+(appt\d+)\b", text, re.I)
     return match.group(1).lower() if match else None
 
 
-def classify_intent_mock(user_message: str) -> IntentClassification:
+def normalize_appointment_ref(value: str | None) -> str | None:
+    if not value or not value.strip():
+        return None
+    ref = value.strip().lower()
+    return ref if _APPOINTMENT_REF_RE.match(ref) else None
+
+
+def _safety_classification(user_message: str) -> IntentClassification | None:
     text = user_message.lower()
     entities = ExtractedEntities(
         specialty=_extract_specialty(user_message),
         doctor_name=_doctor_name_from_message(user_message),
-        date=_extract_date(user_message),
+        date=extract_date_phrase(user_message),
         appointment_id=_extract_appointment_id(user_message),
         preferred_hour=extract_preferred_hour(user_message),
     )
-
     if any(p in text for p in _EMERGENCY_PATTERNS):
         return IntentClassification(
             intent=Intent.UNKNOWN,
@@ -113,7 +116,6 @@ def classify_intent_mock(user_message: str) -> IntentClassification:
             ),
             is_emergency=True,
         )
-
     if any(p in text for p in _PROTECTED_DATA_PATTERNS):
         return IntentClassification(
             intent=Intent.UNKNOWN,
@@ -121,6 +123,56 @@ def classify_intent_mock(user_message: str) -> IntentClassification:
             entities=entities,
             assistant_reply="I can't help with bulk or unauthorized patient record access.",
         )
+    return None
+
+
+def _normalize_llm_entities(
+    classification: IntentClassification,
+    user_message: str,
+    chat_history: list[dict[str, Any]] | None,
+) -> IntentClassification:
+    blob = user_message
+    for turn in (chat_history or [])[-8:]:
+        if turn.get("role") in (None, "user"):
+            blob += " " + (turn.get("content") or "")
+
+    entities = classification.entities
+    doctor = entities.doctor_name or _doctor_name_from_message(user_message) or _doctor_name_from_message(blob)
+    if doctor:
+        doctor = _doctor_name_from_message(doctor) or _doctor_name_from_message(blob) or doctor
+
+    date = entities.date or extract_date_phrase(user_message) or extract_date_phrase(blob)
+    specialty = entities.specialty or _extract_specialty(user_message) or _extract_specialty(blob)
+    appt = normalize_appointment_ref(entities.appointment_id) or _extract_appointment_id(user_message)
+    hour = extract_preferred_hour(user_message) or extract_preferred_hour(blob)
+    if hour is None:
+        hour = entities.preferred_hour
+
+    updated = entities.model_copy(
+        update={
+            "doctor_name": doctor,
+            "date": date,
+            "specialty": specialty,
+            "appointment_id": appt,
+            "preferred_hour": hour,
+        }
+    )
+    return classification.model_copy(update={"entities": updated})
+
+
+def classify_intent_mock(user_message: str) -> IntentClassification:
+    text = user_message.lower()
+    entities = ExtractedEntities(
+        specialty=_extract_specialty(user_message),
+        doctor_name=_doctor_name_from_message(user_message),
+        date=extract_date_phrase(user_message),
+        appointment_id=_extract_appointment_id(user_message),
+        preferred_hour=extract_preferred_hour(user_message),
+    )
+
+    safety = _safety_classification(user_message)
+    if safety:
+        return safety
 
     if any(w in text for w in ("cancel", "cancellation")):
         return IntentClassification(
@@ -146,9 +198,7 @@ def classify_intent_mock(user_message: str) -> IntentClassification:
             assistant_reply="I'll look up your appointments after we verify your identity.",
         )
 
-    if re.search(r"\b(?:available|open)\s+slots?\b", text) or re.search(
-        r"\b(?:get|show|list|what are)\b.*\bslots?\b", text
-    ):
+    if is_slots_request(user_message):
         return IntentClassification(
             intent=Intent.LIST_AVAILABLE_SLOTS,
             confidence=0.86,
@@ -157,11 +207,11 @@ def classify_intent_mock(user_message: str) -> IntentClassification:
         )
 
     if (
-        re.search(r"\b(?:drs?|doctors?)\b.*\bavailable\b", text)
-        or re.search(r"\bavailable\b.*\b(?:drs?|doctors?)\b", text)
-        or re.search(
-            r"\b(?:get|show|list|find|which)\b.*\b(?:drs?|doctors?)\b", text
-        )
+        re.search(r"\b(?:get|show|list|find|which)\b.*\b(?:dentist|cardiolog|specialists?)\b", text)
+        or re.search(r"\b(?:dentist|cardiolog|specialists?)\b.*\bavailable\b", text)
+        or re.search(r"\bavailable\b.*\b(?:dentist|cardiolog|specialists?)\b", text)
+        or re.search(r"\b(?:drs|doctors)\b.*\bavailable\b", text)
+        or re.search(r"\bavailable\b.*\b(?:drs|doctors)\b", text)
     ):
         return IntentClassification(
             intent=Intent.SEARCH_DOCTOR,
@@ -198,48 +248,24 @@ def classify_intent_mock(user_message: str) -> IntentClassification:
     )
 
 
-_INTENT_SYSTEM = """You classify patient messages for a healthcare scheduling assistant.
-Return structured JSON only via the schema.
-
-Intents:
-- BOOK_APPOINTMENT
-- CANCEL_APPOINTMENT
-- SEARCH_DOCTOR
-- LIST_AVAILABLE_SLOTS
-- CHECK_APPOINTMENT
-- UNKNOWN
-
-Extract entities when present: specialty, doctor_name, date, slot, appointment_id.
-Set is_emergency true for chest pain, stroke, can't breathe, severe bleeding, etc.
-Keep assistant_reply to one short helpful sentence."""
-
-
-def classify_intent_llm(user_message: str, settings: Settings | None = None) -> IntentClassification:
+def classify_intent(
+    user_message: str,
+    settings: Settings | None = None,
+    chat_history: list[dict[str, Any]] | None = None,
+) -> IntentClassification:
     cfg = settings or get_settings()
-    if not cfg.openrouter_api_key:
+    safety = _safety_classification(user_message)
+    if safety:
+        return safety
+
+    if use_mock_intent_classifier(cfg):
         return classify_intent_mock(user_message)
 
-    model = ChatOpenAI(
-        model=cfg.openrouter_model,
-        api_key=cfg.openrouter_api_key,
-        base_url=cfg.openrouter_base_url,
-        default_headers={
-            "HTTP-Referer": cfg.openrouter_app_url,
-            "X-Title": "RegulaAgent",
-        },
-        temperature=0,
-    )
-    structured = model.with_structured_output(IntentClassification)
-    return structured.invoke(
-        [
-            SystemMessage(content=_INTENT_SYSTEM),
-            HumanMessage(content=user_message),
-        ]
-    )
-
-
-def classify_intent(user_message: str, settings: Settings | None = None) -> IntentClassification:
-    cfg = settings or get_settings()
-    if cfg.agent_provider == "mock":
+    try:
+        result = classify_intent_openrouter(
+            user_message, chat_history, cfg, system_prompt=INTENT_SYSTEM
+        )
+        return _normalize_llm_entities(result, user_message, chat_history)
+    except Exception:
+        logger.exception("LLM intent classification failed; falling back to mock rules")
         return classify_intent_mock(user_message)
-    return classify_intent_llm(user_message, cfg)
