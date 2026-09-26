@@ -52,14 +52,17 @@ function StepStatus({ ok, label }: { ok: boolean; label: string }) {
 }
 
 function executionLabel(lastRun: AgentRunResponse): string {
+  if (lastRun.tool_result?.status === "success") {
+    const ms = lastRun.tool_result.latency_ms;
+    return ms ? `Completed (${ms} ms)` : "Completed";
+  }
   if (lastRun.tool_result?.status === "deferred") {
     return "Waiting on scheduling API (demo)";
   }
-  if (lastRun.tool_result) return "Completed";
+  if (lastRun.policy?.outcome === "DENY") return "Blocked by policy";
   if (lastRun.proposed_action && lastRun.policy?.outcome === "ALLOW") {
     return "Not started";
   }
-  if (lastRun.policy?.outcome === "DENY") return "Blocked by policy";
   return "—";
 }
 

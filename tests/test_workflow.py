@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from agent.runtime import run_agent

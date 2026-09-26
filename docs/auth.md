@@ -1,26 +1,22 @@
-# Patient login (demo)
+# Patient login (Supabase)
 
-Production-shaped sign-in for the chat UI. Identity for the agent comes from the **session token**, not from sidebar flags or raw patient IDs.
+Identity for the agent comes from the **Supabase session** (JWT), not from chat input or sidebar flags.
 
-## Methods
+## Flow
 
-Enter **your name** in the form; that name is stored in the session and shown in the UI (with email or phone).
-
-| Method | Demo credentials |
-|--------|------------------|
-| Email + password | `jane@example.com` / `demo1234` or `alex@example.com` / `demo1234` |
-| Phone OTP | `+1555010001` (Jane) or `+1555020002` (Alex) — code **`123456`** (shown in UI; no real SMS) |
+1. User signs up or signs in in the UI (Supabase Auth).
+2. Frontend stores the Supabase **access token** and calls `POST /api/v1/auth/profile` with their display name.
+3. User enables **scheduling consent** → `POST /api/v1/auth/consent`.
+4. `POST /api/v1/agent/run` with `Authorization: Bearer <supabase_access_token>` sets `identity_verified` and `patient_id` (Supabase `sub`) server-side.
 
 ## API
 
-- `POST /api/v1/auth/login` — email login → JWT
-- `POST /api/v1/auth/otp/request` — mock send code
-- `POST /api/v1/auth/otp/verify` — phone login → JWT
-- `GET /api/v1/auth/me` — current patient (Bearer token)
-- `POST /api/v1/auth/consent` — `{ "granted": true }` updates token + scheduling consent
-
-`POST /api/v1/agent/run` with `Authorization: Bearer <token>` sets `identity_verified` and `patient_id` server-side. Consent follows the token after `/auth/consent`.
+- `POST /api/v1/auth/profile` — `{ "full_name": "..." }`
+- `GET /api/v1/auth/me`
+- `POST /api/v1/auth/consent` — `{ "granted": true }`
 
 ## Config
 
-`AUTH_SECRET` and `AUTH_TOKEN_TTL_SECONDS` in `.env` (see `.env.example`).
+See [supabase.md](supabase.md) for `SUPABASE_URL`, `SUPABASE_JWT_SECRET`, and frontend `VITE_*` keys.
+
+Consent and display name are stored in Postgres table `patient_profiles` (keyed by Supabase user id).

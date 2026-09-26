@@ -2,6 +2,7 @@ export type Intent =
   | "BOOK_APPOINTMENT"
   | "CANCEL_APPOINTMENT"
   | "SEARCH_DOCTOR"
+  | "LIST_AVAILABLE_SLOTS"
   | "CHECK_APPOINTMENT"
   | "UNKNOWN";
 
@@ -52,12 +53,18 @@ export interface PolicyDecision {
   reason: string;
 }
 
+export interface ChatHistoryTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface AgentRunRequest {
   message: string;
   conversation_id?: string | null;
   patient_id?: string | null;
   identity_verified?: boolean;
   consent_granted?: boolean;
+  chat_history?: ChatHistoryTurn[];
 }
 
 export interface AgentRunResponse {
@@ -70,7 +77,13 @@ export interface AgentRunResponse {
   consent_status: ConsentStatus;
   policy: PolicyDecision | null;
   proposed_action: ProposedAction | null;
-  tool_result: Record<string, unknown> | null;
+  tool_result: {
+    status?: string;
+    tool?: string;
+    data?: Record<string, unknown>;
+    latency_ms?: number;
+    attempt?: number;
+  } | null;
   handoff_state: HandoffState;
   audit_event_count: number;
 }

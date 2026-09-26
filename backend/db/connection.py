@@ -1,4 +1,4 @@
-"""PostgreSQL access via psycopg (raw SQL)."""
+"""PostgreSQL access via psycopg (raw SQL). Works with Supabase or local Postgres."""
 
 from __future__ import annotations
 
@@ -15,8 +15,7 @@ _SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 
 def _conninfo() -> str:
-    url = get_settings().database_url
-    return url.replace("postgresql+psycopg://", "postgresql://", 1)
+    return get_settings().resolved_database_url
 
 
 @contextmanager
@@ -37,3 +36,7 @@ def init_db() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql)
+    from db.healthcare import seed_healthcare_catalog, seed_schedule_slots
+
+    seed_healthcare_catalog()
+    seed_schedule_slots()

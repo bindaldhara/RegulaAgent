@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from agent.intent_classifier import classify_intent
@@ -19,6 +17,18 @@ def test_book_cardiologist_tomorrow() -> None:
     assert result.entities.specialty == "cardiology"
     assert result.entities.date == "tomorrow"
     assert result.confidence >= 0.8
+
+
+def test_available_dentists() -> None:
+    result = classify_intent("get the drs available for dentist")
+    assert result.intent == Intent.SEARCH_DOCTOR
+    assert result.entities.specialty == "dentistry"
+
+
+def test_list_available_slots() -> None:
+    result = classify_intent("get available slots for Dr. Ana Rivera")
+    assert result.intent == Intent.LIST_AVAILABLE_SLOTS
+    assert result.entities.doctor_name == "Dr. Ana Rivera"
 
 
 def test_search_doctor() -> None:

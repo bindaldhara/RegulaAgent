@@ -25,6 +25,7 @@ def _initial_state(request: AgentRunRequest, conversation_id: uuid.UUID, run_id:
         consent_status=consent,
         identity_verified_input=request.identity_verified,
         consent_granted_input=request.consent_granted,
+        chat_history=[{"role": t.role, "content": t.content} for t in request.chat_history],
         handoff_state=HandoffState.NONE,
         current_step=WorkflowStep.INTENT,
         audit_events=[],

@@ -6,6 +6,14 @@ from services.auth import PatientSession, decode_access_token
 _bearer = HTTPBearer(auto_error=False)
 
 
+def get_bearer_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not signed in")
+    return credentials.credentials
+
+
 def get_optional_session(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> PatientSession | None:

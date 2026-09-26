@@ -40,3 +40,4 @@ class AgentState(TypedDict, total=False):
 
     identity_verified_input: bool
     consent_granted_input: bool
+    chat_history: list[dict[str, str]]

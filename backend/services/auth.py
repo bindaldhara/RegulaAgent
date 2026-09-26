@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import time
-import uuid
 from dataclasses import dataclass
-from typing import Literal
-
-AuthVia = Literal["email", "phone"]
-
-import jwt
+from typing import Any, Literal
 
 from config import get_settings
-from services.demo_patients import DEMO_OTP_CODE, DEMO_PATIENTS_BY_EMAIL, DEMO_PATIENTS_BY_PHONE, DemoPatient
+from services.patient_profiles import ProfileRow, get_profile, upsert_profile
+from services.supabase_auth import decode_supabase_access_token
 
-ALGORITHM = "HS256"
+AuthVia = Literal["email", "phone"]
 
 
 @dataclass
@@ -25,85 +20,77 @@ class PatientSession:
     auth_via: AuthVia | None = None
 
 
-def authenticate_email(email: str, password: str) -> DemoPatient | None:
-    patient = DEMO_PATIENTS_BY_EMAIL.get(email.strip().lower())
-    if patient and patient.password == password:
-        return patient
-    return None
+def _auth_via_from_claims(claims: dict[str, Any]) -> AuthVia:
+    if claims.get("phone"):
+        return "phone"
+    return "email"
 
 
-def patient_for_phone(phone: str) -> DemoPatient | None:
-    normalized = phone.strip().replace(" ", "").replace("-", "")
-    if not normalized.startswith("+") and len(normalized) == 10:
-        normalized = f"+1{normalized}"
-    return DEMO_PATIENTS_BY_PHONE.get(normalized)
+def _display_name_from_claims(claims: dict[str, Any]) -> str:
+    meta = claims.get("user_metadata") or {}
+    if isinstance(meta, dict):
+        name = meta.get("full_name") or meta.get("name")
+        if name:
+            return str(name).strip()
+    return ""
 
 
-def verify_otp(code: str) -> bool:
-    return code.strip() == DEMO_OTP_CODE
-
-
-def create_access_token(session: PatientSession) -> str:
+def session_from_token(token: str) -> PatientSession | None:
     settings = get_settings()
-    now = int(time.time())
-    payload = {
-        "sub": session.patient_id,
-        "name": session.full_name,
-        "email": session.email,
-        "phone": session.phone,
-        "consent": session.consent_granted,
-        "auth_via": session.auth_via,
-        "iat": now,
-        "exp": now + settings.auth_token_ttl_seconds,
-        "jti": uuid.uuid4().hex,
-    }
-    return jwt.encode(payload, settings.auth_secret, algorithm=ALGORITHM)
-
-
-def decode_access_token(token: str) -> PatientSession | None:
-    settings = get_settings()
-    try:
-        payload = jwt.decode(token, settings.auth_secret, algorithms=[ALGORITHM])
-    except jwt.PyJWTError:
+    if not settings.supabase_configured:
         return None
-    return PatientSession(
-        patient_id=str(payload["sub"]),
-        full_name=str(payload.get("name", "")),
-        email=payload.get("email"),
-        phone=payload.get("phone"),
-        consent_granted=bool(payload.get("consent", False)),
-        auth_via=payload.get("auth_via"),
-    )
+    claims = decode_supabase_access_token(token)
+    if claims is None:
+        return None
+    user_id = str(claims["sub"])
+    email = claims.get("email")
+    phone = claims.get("phone")
+    auth_via = _auth_via_from_claims(claims)
 
+    profile = get_profile(user_id)
+    if profile is not None:
+        full_name = profile.full_name or _display_name_from_claims(claims)
+        return PatientSession(
+            patient_id=user_id,
+            full_name=full_name,
+            email=profile.email or email,
+            phone=profile.phone or phone,
+            consent_granted=profile.consent_granted,
+            auth_via=auth_via,
+        )
 
-def session_from_patient(
-    patient: DemoPatient,
-    consent_granted: bool = False,
-    auth_via: AuthVia | None = None,
-    display_name: str | None = None,
-) -> PatientSession:
+    full_name = _display_name_from_claims(claims)
     return PatientSession(
-        patient_id=patient.external_id,
-        full_name=(display_name or patient.full_name).strip(),
-        email=patient.email,
-        phone=patient.phone,
-        consent_granted=consent_granted,
+        patient_id=user_id,
+        full_name=full_name,
+        email=email,
+        phone=phone,
+        consent_granted=False,
         auth_via=auth_via,
     )
 
 
-def issue_token_for_patient(patient: DemoPatient, consent_granted: bool = False) -> str:
-    return create_access_token(session_from_patient(patient, consent_granted=consent_granted))
+def decode_access_token(token: str) -> PatientSession | None:
+    return session_from_token(token)
 
 
-def reissue_with_consent(session: PatientSession, consent_granted: bool) -> str:
-    return create_access_token(
-        PatientSession(
-            patient_id=session.patient_id,
-            full_name=session.full_name,
-            email=session.email,
-            phone=session.phone,
-            consent_granted=consent_granted,
-            auth_via=session.auth_via,
-        )
+def profile_to_session(row: ProfileRow, auth_via: AuthVia | None) -> PatientSession:
+    return PatientSession(
+        patient_id=row.user_id,
+        full_name=row.full_name,
+        email=row.email,
+        phone=row.phone,
+        consent_granted=row.consent_granted,
+        auth_via=auth_via,
     )
+
+
+def sync_profile_from_claims(
+    claims: dict[str, Any],
+    full_name: str,
+) -> PatientSession:
+    user_id = str(claims["sub"])
+    email = claims.get("email")
+    phone = claims.get("phone")
+    row = upsert_profile(user_id, full_name=full_name, email=email, phone=phone)
+    return profile_to_session(row, _auth_via_from_claims(claims))

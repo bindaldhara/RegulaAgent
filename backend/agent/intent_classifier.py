@@ -10,6 +10,8 @@ from langchain_openai import ChatOpenAI
 from config import Settings, get_settings
 from schemas.enums import Intent
 from schemas.intent import ExtractedEntities, IntentClassification
+from services.doctor_matching import extract_preferred_hour, resolve_doctor_from_message
+from services.scheduling_slots import SEED_DOCTORS
 
 _SPECIALTY_MAP = {
     "cardio": "cardiology",
@@ -65,17 +67,39 @@ def _extract_date(text: str) -> str | None:
     return None
 
 
+def _doctor_name_from_message(text: str) -> str | None:
+    lower = text.lower()
+    for _, full_name, _ in SEED_DOCTORS:
+        if full_name.lower() in lower:
+            return full_name
+        last = full_name.split()[-1]
+        first = full_name.split()[1] if full_name.startswith("Dr.") else ""
+        if last.lower() in lower and (not first or first.lower() in lower):
+            return full_name
+    ext = resolve_doctor_from_message(text)
+    if ext:
+        for e, name, _ in SEED_DOCTORS:
+            if e == ext:
+                return name
+    return None
+
+
 def _extract_appointment_id(text: str) -> str | None:
-    match = re.search(r"\b(?:appt|appointment)[\s#-]*([a-z0-9-]{6,})\b", text, re.I)
-    return match.group(1) if match else None
+    match = re.search(r"\b(appt\d+)\b", text, re.I)
+    if match:
+        return match.group(1).lower()
+    match = re.search(r"\b(?:appt|appointment)[\s#-]*([a-z0-9-]+)\b", text, re.I)
+    return match.group(1).lower() if match else None
 
 
 def classify_intent_mock(user_message: str) -> IntentClassification:
     text = user_message.lower()
     entities = ExtractedEntities(
         specialty=_extract_specialty(user_message),
+        doctor_name=_doctor_name_from_message(user_message),
         date=_extract_date(user_message),
         appointment_id=_extract_appointment_id(user_message),
+        preferred_hour=extract_preferred_hour(user_message),
     )
 
     if any(p in text for p in _EMERGENCY_PATTERNS):
@@ -114,6 +138,38 @@ def classify_intent_mock(user_message: str) -> IntentClassification:
             assistant_reply="I'll look up your appointments after we verify your identity.",
         )
 
+    if re.search(r"\b(?:find|list|show|get|check)\b.*\bappointments?\b", text) or "my appointments" in text:
+        return IntentClassification(
+            intent=Intent.CHECK_APPOINTMENT,
+            confidence=0.88,
+            entities=entities,
+            assistant_reply="I'll look up your appointments after we verify your identity.",
+        )
+
+    if re.search(r"\b(?:available|open)\s+slots?\b", text) or re.search(
+        r"\b(?:get|show|list|what are)\b.*\bslots?\b", text
+    ):
+        return IntentClassification(
+            intent=Intent.LIST_AVAILABLE_SLOTS,
+            confidence=0.86,
+            entities=entities,
+            assistant_reply="I'll check open appointment times for that doctor and date.",
+        )
+
+    if (
+        re.search(r"\b(?:drs?|doctors?)\b.*\bavailable\b", text)
+        or re.search(r"\bavailable\b.*\b(?:drs?|doctors?)\b", text)
+        or re.search(
+            r"\b(?:get|show|list|find|which)\b.*\b(?:drs?|doctors?)\b", text
+        )
+    ):
+        return IntentClassification(
+            intent=Intent.SEARCH_DOCTOR,
+            confidence=0.84,
+            entities=entities,
+            assistant_reply="I'll search for doctors that match what you asked for.",
+        )
+
     if any(w in text for w in ("find", "search", "who is available", "available doctor", "specialist")):
         return IntentClassification(
             intent=Intent.SEARCH_DOCTOR,
@@ -122,7 +178,9 @@ def classify_intent_mock(user_message: str) -> IntentClassification:
             assistant_reply="I'll search for doctors that match what you asked for.",
         )
 
-    if any(w in text for w in ("book", "schedule", "appointment", "see a", "visit")):
+    if any(w in text for w in ("book", "schedule", "appointment", "see a", "visit")) or re.search(
+        r"\b(?:then|instead)\b.*\bbook\b", text
+    ):
         specialty = entities.specialty or "provider"
         date_phrase = entities.date or "your preferred date"
         return IntentClassification(
@@ -147,6 +205,7 @@ Intents:
 - BOOK_APPOINTMENT
 - CANCEL_APPOINTMENT
 - SEARCH_DOCTOR
+- LIST_AVAILABLE_SLOTS
 - CHECK_APPOINTMENT
 - UNKNOWN
 

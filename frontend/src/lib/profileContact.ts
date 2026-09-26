@@ -25,9 +25,3 @@ export function profileNameWithContact(patient: PatientProfile): string {
   }
   return `${patient.full_name} · ${contact}`;
 }
-
-/** Second line under the name in the sign-in card. */
-export function profileSignedInDetail(patient: PatientProfile): string {
-  const label = profileContactLabel(patient).toLowerCase();
-  return `Signed in with ${label} · ${profileContactLine(patient)}`;
-}

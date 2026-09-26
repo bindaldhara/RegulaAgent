@@ -6,6 +6,7 @@ from typing import Any
 
 from agent.intent_classifier import classify_intent
 from config import get_settings
+from policy.engine import PolicyEngine
 from schemas.agent import PolicyDecision, ProposedAction
 from schemas.enums import (
     ConsentStatus,
@@ -17,9 +18,13 @@ from schemas.enums import (
     WorkflowStep,
 )
 from schemas.intent import IntentClassification
+from services.datetime_display import format_appointment_time
+from services.doctor_matching import resolve_doctor_external_id
+from services.entity_context import enrich_booking_entities
+from tools.router import ToolExecutionError, execute_tool
 
+_POLICY = PolicyEngine()
 _PROTECTED_INTENTS = {Intent.BOOK_APPOINTMENT, Intent.CANCEL_APPOINTMENT, Intent.CHECK_APPOINTMENT}
-_HIGH_RISK_TOOLS = {"get_patient_records", "list_all_patients"}
 
 
 def _append_audit(state: dict[str, Any], event_type: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -31,6 +36,13 @@ def _append_audit(state: dict[str, Any], event_type: str, payload: dict[str, Any
 def intent_node(state: dict[str, Any]) -> dict[str, Any]:
     message = state["user_message"]
     classification = classify_intent(message, get_settings())
+    if classification.intent in (Intent.BOOK_APPOINTMENT, Intent.LIST_AVAILABLE_SLOTS):
+        entities = enrich_booking_entities(
+            classification.entities,
+            message,
+            state.get("chat_history"),
+        )
+        classification = classification.model_copy(update={"entities": entities})
     return {
         "intent": classification,
         "current_step": WorkflowStep.INTENT,
@@ -66,7 +78,7 @@ def identity_node(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "identity_status": IdentityStatus.PENDING,
         "current_step": WorkflowStep.IDENTITY,
-        "assistant_reply": "Before I continue, please confirm your patient ID and date of birth.",
+        "assistant_reply": "Please sign in to continue with booking or viewing your appointments.",
         "audit_events": _append_audit(state, "identity_required", {"intent": intent.intent}),
     }
 
@@ -81,10 +93,7 @@ def consent_node(state: dict[str, Any]) -> dict[str, Any]:
         }
 
     if state.get("identity_status") != IdentityStatus.VERIFIED:
-        return {
-            "consent_status": ConsentStatus.PENDING,
-            "current_step": WorkflowStep.CONSENT,
-        }
+        return {"consent_status": ConsentStatus.PENDING, "current_step": WorkflowStep.CONSENT}
 
     if state.get("consent_granted_input"):
         return {
@@ -97,8 +106,7 @@ def consent_node(state: dict[str, Any]) -> dict[str, Any]:
         "consent_status": ConsentStatus.PENDING,
         "current_step": WorkflowStep.CONSENT,
         "assistant_reply": (
-            "I need your consent to access scheduling actions on your behalf. "
-            "Reply yes to continue."
+            "Please confirm scheduling consent in the sign-in panel (checkbox) to book or cancel."
         ),
         "audit_events": _append_audit(state, "consent_required", {}),
     }
@@ -112,14 +120,26 @@ def _intent_to_action(intent: IntentClassification) -> ProposedAction | None:
             arguments={"specialty": entities.specialty},
             risk_level=RiskLevel.LOW,
         )
+    if intent.intent == Intent.LIST_AVAILABLE_SLOTS:
+        return ProposedAction(
+            tool_name="get_available_slots",
+            arguments={
+                "specialty": entities.specialty,
+                "doctor_id": resolve_doctor_external_id(entities.doctor_name),
+                "date": entities.date,
+            },
+            risk_level=RiskLevel.LOW,
+        )
     if intent.intent == Intent.BOOK_APPOINTMENT:
+        doctor_id = resolve_doctor_external_id(entities.doctor_name)
         return ProposedAction(
             tool_name="book_appointment",
             arguments={
                 "specialty": entities.specialty,
                 "date": entities.date,
-                "slot": entities.slot,
-                "doctor_name": entities.doctor_name,
+                "slot_id": entities.slot,
+                "doctor_id": doctor_id,
+                "preferred_hour": entities.preferred_hour,
             },
             risk_level=RiskLevel.MEDIUM,
         )
@@ -132,7 +152,7 @@ def _intent_to_action(intent: IntentClassification) -> ProposedAction | None:
     if intent.intent == Intent.CHECK_APPOINTMENT:
         return ProposedAction(
             tool_name="get_patient_appointments",
-            arguments={"patient_id": None},
+            arguments={},
             risk_level=RiskLevel.HIGH,
         )
     return None
@@ -158,123 +178,113 @@ def action_node(state: dict[str, Any]) -> dict[str, Any]:
 def policy_node(state: dict[str, Any]) -> dict[str, Any]:
     intent = state.get("intent")
     proposed = state.get("proposed_action")
-
-    if intent and intent.is_emergency:
-        decision = PolicyDecision(
-            outcome=PolicyOutcome.ESCALATE,
-            risk_level=RiskLevel.CRITICAL,
-            reason="Emergency symptoms reported; human handoff required.",
-        )
-        return {
-            "policy_decision": decision,
-            "risk_level": decision.risk_level,
-            "current_step": WorkflowStep.POLICY,
-            "handoff_state": HandoffState.QUEUED,
-            "audit_events": _append_audit(state, "policy_escalate", {"reason": decision.reason}),
-        }
-
-    if proposed and proposed.tool_name in _HIGH_RISK_TOOLS:
-        decision = PolicyDecision(
-            outcome=PolicyOutcome.DENY,
-            risk_level=RiskLevel.HIGH,
-            reason="Protected patient data access is not allowed.",
-        )
-        return {
-            "policy_decision": decision,
-            "risk_level": decision.risk_level,
-            "current_step": WorkflowStep.POLICY,
-            "audit_events": _append_audit(state, "policy_deny", {"reason": decision.reason}),
-        }
-
-    if proposed and proposed.risk_level == RiskLevel.MEDIUM:
-        if state.get("identity_status") != IdentityStatus.VERIFIED:
-            decision = PolicyDecision(
-                outcome=PolicyOutcome.DENY,
-                risk_level=RiskLevel.MEDIUM,
-                reason="Identity verification required before booking or cancellation.",
-            )
-            return {
-                "policy_decision": decision,
-                "risk_level": decision.risk_level,
-                "current_step": WorkflowStep.POLICY,
-                "audit_events": _append_audit(state, "policy_deny", {"reason": decision.reason}),
-            }
-        if state.get("consent_status") != ConsentStatus.GRANTED:
-            decision = PolicyDecision(
-                outcome=PolicyOutcome.DENY,
-                risk_level=RiskLevel.MEDIUM,
-                reason="Explicit consent required before protected scheduling actions.",
-            )
-            return {
-                "policy_decision": decision,
-                "risk_level": decision.risk_level,
-                "current_step": WorkflowStep.POLICY,
-                "audit_events": _append_audit(state, "policy_deny", {"reason": decision.reason}),
-            }
-
-    if proposed and proposed.risk_level == RiskLevel.HIGH:
-        if state.get("identity_status") != IdentityStatus.VERIFIED:
-            decision = PolicyDecision(
-                outcome=PolicyOutcome.DENY,
-                risk_level=RiskLevel.HIGH,
-                reason="Authorization required for protected patient data.",
-            )
-            return {
-                "policy_decision": decision,
-                "risk_level": decision.risk_level,
-                "current_step": WorkflowStep.POLICY,
-                "audit_events": _append_audit(state, "policy_deny", {"reason": decision.reason}),
-            }
-
-    if intent and intent.intent == Intent.UNKNOWN and proposed is None:
-        decision = PolicyDecision(
-            outcome=PolicyOutcome.DENY,
-            risk_level=RiskLevel.LOW,
-            reason="No actionable intent; cannot invoke tools.",
-        )
-        return {
-            "policy_decision": decision,
-            "risk_level": decision.risk_level,
-            "current_step": WorkflowStep.POLICY,
-            "audit_events": _append_audit(state, "policy_deny", {"reason": decision.reason}),
-        }
-
-    decision = PolicyDecision(
-        outcome=PolicyOutcome.ALLOW,
-        risk_level=proposed.risk_level if proposed else RiskLevel.LOW,
-        reason="Action permitted by policy.",
+    decision = _POLICY.evaluate(
+        intent=intent,
+        proposed=proposed,
+        identity_status=state.get("identity_status", IdentityStatus.UNVERIFIED),
+        consent_status=state.get("consent_status", ConsentStatus.PENDING),
+        patient_id=state.get("patient_id"),
+        tool_args=proposed.arguments if proposed else None,
     )
-    return {
+    updates: dict[str, Any] = {
         "policy_decision": decision,
         "risk_level": decision.risk_level,
         "current_step": WorkflowStep.POLICY,
-        "audit_events": _append_audit(state, "policy_allow", {"tool": proposed.tool_name if proposed else None}),
     }
+    if decision.outcome == PolicyOutcome.ESCALATE:
+        updates["handoff_state"] = HandoffState.QUEUED
+        updates["audit_events"] = _append_audit(state, "policy_escalate", {"reason": decision.reason})
+    elif decision.outcome == PolicyOutcome.DENY:
+        updates["audit_events"] = _append_audit(state, "policy_deny", {"reason": decision.reason})
+    else:
+        updates["audit_events"] = _append_audit(
+            state,
+            "policy_allow",
+            {"tool": proposed.tool_name if proposed else None},
+        )
+    return updates
 
 
 def tool_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Placeholder until Day 1 afternoon mock healthcare tools are implemented."""
     proposed = state.get("proposed_action")
     if not proposed:
         return {"current_step": WorkflowStep.TOOL, "tool_result": None}
 
-    result = {
-        "status": "deferred",
-        "message": f"Tool `{proposed.tool_name}` will execute after mock APIs are wired (Day 1 PM).",
-        "arguments": proposed.arguments,
-    }
-    return {
-        "tool_result": result,
-        "current_step": WorkflowStep.TOOL,
-        "audit_events": _append_audit(state, "tool_deferred", {"tool": proposed.tool_name}),
-    }
+    try:
+        result = execute_tool(
+            proposed.tool_name,
+            proposed.arguments,
+            patient_id=state.get("patient_id"),
+            idempotency_key=state.get("run_id"),
+        )
+        return {
+            "tool_result": result,
+            "tool_error": None,
+            "current_step": WorkflowStep.TOOL,
+            "audit_events": _append_audit(
+                state,
+                "tool_executed",
+                {"tool": proposed.tool_name, "status": result.get("status")},
+            ),
+        }
+    except ToolExecutionError as exc:
+        return {
+            "tool_result": None,
+            "tool_error": str(exc),
+            "current_step": WorkflowStep.TOOL,
+            "audit_events": _append_audit(
+                state,
+                "tool_failed",
+                {"tool": proposed.tool_name, "error": str(exc)},
+            ),
+        }
 
 
 def result_validation_node(state: dict[str, Any]) -> dict[str, Any]:
+    ok = state.get("tool_error") is None and (
+        state.get("tool_result") is None or state.get("tool_result", {}).get("status") == "success"
+    )
     return {
         "current_step": WorkflowStep.RESULT_VALIDATION,
-        "audit_events": _append_audit(state, "result_validated", {"ok": True}),
+        "audit_events": _append_audit(state, "result_validated", {"ok": ok}),
     }
+
+
+def _format_tool_reply(tool_name: str, data: dict[str, Any]) -> str:
+    if tool_name == "search_doctors":
+        doctors = data.get("doctors") or []
+        if not doctors:
+            return "I couldn't find doctors for that specialty."
+        lines = [f"• {d['full_name']} ({d['specialty']})" for d in doctors]
+        return "Here are available doctors:\n" + "\n".join(lines)
+    if tool_name == "get_available_slots":
+        slots = data.get("slots") or []
+        if not slots:
+            return "No open slots for that date."
+        lines = [
+            f"{i}. {s['doctor_name']} — {format_appointment_time(s['starts_at'])}"
+            for i, s in enumerate(slots[:5], 1)
+        ]
+        return "Available slots:\n\n" + "\n".join(lines)
+    if tool_name == "book_appointment":
+        replay = data.get("idempotent_replay")
+        prefix = "Confirmed (existing booking): " if replay else "Booked: "
+        when = format_appointment_time(data["starts_at"])
+        return f"{prefix}{data['doctor_name']} on {when} (ref {data['appointment_id']})."
+    if tool_name == "cancel_appointment":
+        return f"Cancelled appointment {data['appointment_id']}."
+    if tool_name == "get_patient_appointments":
+        appts = data.get("appointments") or []
+        if not appts:
+            return "You have no appointments on file."
+        blocks: list[str] = []
+        for i, a in enumerate(appts, 1):
+            when = format_appointment_time(a["starts_at"])
+            status = str(a.get("status", "booked"))
+            ref = a.get("appointment_id", "")
+            blocks.append(f"{i}. {a['doctor_name']}\n   {when} · {status} · {ref}")
+        return "Your appointments:\n\n" + "\n\n".join(blocks)
+    return "Done."
 
 
 def response_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -297,16 +307,34 @@ def response_node(state: dict[str, Any]) -> dict[str, Any]:
             "final_outcome": "denied",
         }
 
+    if state.get("tool_error"):
+        err = state["tool_error"]
+        if "already booked" in err.lower() or err.startswith("The "):
+            reply = err
+        else:
+            reply = f"I couldn't complete that action: {err}"
+        return {
+            "assistant_reply": reply,
+            "current_step": WorkflowStep.RESPONSE,
+            "final_outcome": "tool_failed",
+        }
+
+    tool_result = state.get("tool_result")
+    proposed = state.get("proposed_action")
+    if tool_result and tool_result.get("status") == "success" and proposed:
+        reply = _format_tool_reply(proposed.tool_name, tool_result.get("data", {}))
+        return {
+            "assistant_reply": reply,
+            "current_step": WorkflowStep.RESPONSE,
+            "final_outcome": "completed",
+        }
+
     if state.get("assistant_reply"):
         reply = state["assistant_reply"]
     elif intent:
         reply = intent.assistant_reply
     else:
         reply = "How can I help with your healthcare scheduling today?"
-
-    tool_result = state.get("tool_result")
-    if tool_result and tool_result.get("status") == "deferred":
-        reply = f"{reply}\n\n({tool_result['message']})"
 
     return {
         "assistant_reply": reply,

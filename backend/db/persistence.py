@@ -86,6 +86,26 @@ def persist_agent_run(
                     ),
                 )
 
+            tool_result = state.get("tool_result")
+            proposed = state.get("proposed_action")
+            if proposed and (tool_result or state.get("tool_error")):
+                cur.execute(
+                    """
+                    INSERT INTO tool_calls (
+                        agent_run_id, tool_name, request_json, response_json, status, latency_ms
+                    )
+                    VALUES (%s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                    """,
+                    (
+                        agent_run_id,
+                        proposed.tool_name,
+                        json.dumps(proposed.arguments),
+                        json.dumps(tool_result) if tool_result else json.dumps({"error": state.get("tool_error")}),
+                        "success" if tool_result else "error",
+                        tool_result.get("latency_ms") if tool_result else None,
+                    ),
+                )
+
             for event in state.get("audit_events") or []:
                 cur.execute(
                     """

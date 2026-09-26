@@ -26,12 +26,18 @@ class PolicyDecision(BaseModel):
     reason: str
 
 
+class ChatHistoryTurn(BaseModel):
+    role: str
+    content: str
+
+
 class AgentRunRequest(BaseModel):
     message: str
     conversation_id: UUID | None = None
     patient_id: str | None = None
     identity_verified: bool = False
     consent_granted: bool = False
+    chat_history: list[ChatHistoryTurn] = Field(default_factory=list)
 
 
 class AgentRunResponse(BaseModel):

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import quote_plus, urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -7,13 +8,17 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     agent_provider: str = "mock"
-    auth_secret: str = "regula-dev-secret-change-in-production"
-    auth_token_ttl_seconds: int = 60 * 60 * 8
+
+    supabase_url: str = ""
+    supabase_jwt_secret: str = ""
 
     openrouter_api_key: str | None = None
     openrouter_model: str = "openai/gpt-4o-mini"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_app_url: str = "http://localhost:5173"
+
+    # Optional single URI. If password contains +, @, /, etc., use POSTGRES_* below instead.
+    database_url: str | None = None
 
     postgres_host: str = "localhost"
     postgres_port: int = 5432
@@ -21,12 +26,40 @@ class Settings(BaseSettings):
     postgres_user: str = "regula"
     postgres_password: str = "regula"
 
-    @property
-    def database_url(self) -> str:
+    @staticmethod
+    def _normalize_database_url(url: str) -> str:
+        if url.startswith("postgres://"):
+            return "postgresql://" + url[len("postgres://") :]
+        return url
+
+    @staticmethod
+    def _looks_like_valid_postgres_url(url: str) -> bool:
+        parsed = urlparse(url)
+        if not parsed.hostname or "." not in parsed.hostname:
+            return False
+        if "@" in (parsed.path or ""):
+            return False
+        return parsed.scheme in ("postgresql", "postgres")
+
+    def _url_from_postgres_fields(self) -> str:
+        user = quote_plus(self.postgres_user)
+        password = quote_plus(self.postgres_password)
         return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql://{user}:{password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def resolved_database_url(self) -> str:
+        if self.database_url and self.database_url.strip():
+            url = self._normalize_database_url(self.database_url.strip())
+            if self._looks_like_valid_postgres_url(url):
+                return url
+        return self._url_from_postgres_fields()
+
+    @property
+    def supabase_configured(self) -> bool:
+        return bool(self.supabase_url.strip())
 
 
 @lru_cache

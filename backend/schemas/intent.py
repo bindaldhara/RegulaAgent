@@ -9,6 +9,7 @@ class ExtractedEntities(BaseModel):
     date: str | None = None
     slot: str | None = None
     appointment_id: str | None = None
+    preferred_hour: int | None = None
 
 
 class IntentClassification(BaseModel):

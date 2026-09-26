@@ -1,7 +1,15 @@
 import { motion } from "motion/react";
 import { useState } from "react";
-import { loginEmail, requestOtp, updateConsent, verifyOtp } from "../api/auth";
+import {
+  loginEmail,
+  requestPhoneOtp,
+  signOut,
+  signUpEmail,
+  updateConsent,
+  verifyPhoneOtp,
+} from "../api/auth";
 import { clearAccessToken } from "../lib/authStorage";
+import { supabaseConfigured } from "../lib/supabase";
 import {
   profileContactLabel,
   profileNameWithContact,
@@ -14,7 +22,7 @@ type Tab = "email" | "phone";
 
 interface LoginPanelProps {
   patient: PatientProfile | null;
-  onAuthenticated: (patient: PatientProfile) => void;
+  onAuthenticated: (patient: PatientProfile, options?: { resetChat?: boolean }) => void;
   onLogout: () => void;
   onNewConversation: () => void;
 }
@@ -26,16 +34,17 @@ export function LoginPanel({
   onNewConversation,
 }: LoginPanelProps) {
   const [tab, setTab] = useState<Tab>("email");
+  const [emailMode, setEmailMode] = useState<"signin" | "signup">("signin");
   const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("jane@example.com");
-  const [password, setPassword] = useState("demo1234");
-  const [phone, setPhone] = useState("+1555010001");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
-  const [otpHint, setOtpHint] = useState<string | null>(null);
+  const [otpSent, setOtpSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleEmailLogin(e: React.FormEvent) {
+  async function handleEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!fullName.trim()) {
       setError("Please enter your name");
@@ -44,8 +53,11 @@ export function LoginPanel({
     setError(null);
     setLoading(true);
     try {
-      const res = await loginEmail(email, password, fullName.trim());
-      onAuthenticated(res.patient);
+      const profile =
+        emailMode === "signup"
+          ? await signUpEmail(email, password, fullName.trim())
+          : await loginEmail(email, password, fullName.trim());
+      onAuthenticated(profile, { resetChat: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed");
     } finally {
@@ -57,8 +69,8 @@ export function LoginPanel({
     setError(null);
     setLoading(true);
     try {
-      const res = await requestOtp(phone);
-      setOtpHint(res.demo_code ? `Demo code: ${res.demo_code}` : res.message);
+      await requestPhoneOtp(phone);
+      setOtpSent(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send code");
     } finally {
@@ -75,8 +87,8 @@ export function LoginPanel({
     setError(null);
     setLoading(true);
     try {
-      const res = await verifyOtp(phone, otp, fullName.trim());
-      onAuthenticated(res.patient);
+      const profile = await verifyPhoneOtp(phone, otp, fullName.trim());
+      onAuthenticated(profile, { resetChat: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
     } finally {
@@ -89,8 +101,8 @@ export function LoginPanel({
     setError(null);
     setLoading(true);
     try {
-      const res = await updateConsent(granted);
-      onAuthenticated(res.patient);
+      const updated = await updateConsent(granted);
+      onAuthenticated(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update consent");
     } finally {
@@ -98,9 +110,21 @@ export function LoginPanel({
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await signOut();
     clearAccessToken();
-    onLogout();
+    onLogout(); /* clears chat + patient in App */
+  }
+
+  if (!supabaseConfigured) {
+    return (
+      <GlassCard className="p-4" glow="violet">
+        <p className="text-sm text-amber-200/90">
+          Supabase is not configured. Set <code className="text-xs">VITE_SUPABASE_URL</code> and{" "}
+          <code className="text-xs">VITE_SUPABASE_ANON_KEY</code> in your environment.
+        </p>
+      </GlassCard>
+    );
   }
 
   return (
@@ -160,7 +184,7 @@ export function LoginPanel({
         ) : (
           <>
             <motion.p className="mb-3 text-xs leading-relaxed text-zinc-500" variants={fadeUp}>
-              Enter your name, then sign in with email or phone (demo OTP).
+              Sign in with Supabase (email or phone). Your name is saved for this account.
             </motion.p>
 
             <motion.label className="mb-3 block" variants={fadeUp}>
@@ -194,7 +218,24 @@ export function LoginPanel({
             </motion.div>
 
             {tab === "email" ? (
-              <motion.form onSubmit={handleEmailLogin} className="space-y-2" variants={fadeUp}>
+              <motion.form onSubmit={handleEmailSubmit} className="space-y-2" variants={fadeUp}>
+                <div className="mb-2 flex gap-2 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setEmailMode("signin")}
+                    className={emailMode === "signin" ? "text-violet-300" : "text-zinc-500"}
+                  >
+                    Sign in
+                  </button>
+                  <span className="text-zinc-600">·</span>
+                  <button
+                    type="button"
+                    onClick={() => setEmailMode("signup")}
+                    className={emailMode === "signup" ? "text-violet-300" : "text-zinc-500"}
+                  >
+                    Create account
+                  </button>
+                </div>
                 <input
                   type="email"
                   value={email}
@@ -216,9 +257,8 @@ export function LoginPanel({
                   disabled={loading}
                   className="ms-gradient-cta w-full rounded-xl py-2.5 text-sm font-semibold disabled:opacity-50"
                 >
-                  Sign in
+                  {emailMode === "signup" ? "Create account" : "Sign in"}
                 </button>
-                <p className="text-[10px] text-zinc-600">Demo: jane@example.com / demo1234</p>
               </motion.form>
             ) : (
               <motion.form onSubmit={handleVerifyOtp} className="space-y-2" variants={fadeUp}>
@@ -226,7 +266,7 @@ export function LoginPanel({
                   type="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+1555010001"
+                  placeholder="+15551234567"
                   className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2.5 text-sm outline-none focus:border-violet-400/35"
                   required
                 />
@@ -238,7 +278,11 @@ export function LoginPanel({
                 >
                   Send verification code
                 </button>
-                {otpHint && <p className="text-[11px] text-amber-200/80">{otpHint}</p>}
+                {otpSent && (
+                  <p className="text-[11px] text-amber-200/80">
+                    Enter the SMS code from Supabase (enable Phone provider in your project).
+                  </p>
+                )}
                 <input
                   value={otp}
                   onChange={(e) => setOtp(e.target.value)}
@@ -253,7 +297,6 @@ export function LoginPanel({
                 >
                   Verify & sign in
                 </button>
-                <p className="text-[10px] text-zinc-600">Demo phone: +1555010001 (Jane) · code 123456</p>
               </motion.form>
             )}
           </>

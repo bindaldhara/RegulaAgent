@@ -77,7 +77,7 @@ export function ChatPanel({
                 className={`max-w-[88%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
                   msg.role === "user"
                     ? "ms-gradient-cta font-medium"
-                    : "border border-white/10 bg-black/40 text-zinc-100"
+                    : "border border-white/10 bg-black/40 text-zinc-100 whitespace-pre-wrap"
                 }`}
               >
                 {msg.content}

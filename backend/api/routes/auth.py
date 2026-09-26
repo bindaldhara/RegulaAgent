@@ -1,86 +1,24 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.deps import get_required_session
-from schemas.auth import (
-    AuthResponse,
-    ConsentRequest,
-    LoginEmailRequest,
-    OtpRequestRequest,
-    OtpRequestResponse,
-    OtpVerifyRequest,
-    PatientProfile,
-)
-from services.auth import (
-    authenticate_email,
-    patient_for_phone,
-    reissue_with_consent,
-    session_from_patient,
-    verify_otp,
-)
-from services.demo_patients import DEMO_OTP_CODE
+from api.deps import get_bearer_token, get_required_session
+from config import get_settings
+from schemas.auth import ConsentRequest, PatientProfile, ProfileUpsertRequest
+from services.auth import PatientSession, profile_to_session, sync_profile_from_claims
+from services.patient_profiles import set_consent
+from services.supabase_auth import decode_supabase_access_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _auth_response(patient_session) -> AuthResponse:
-    from services.auth import create_access_token
-
-    token = create_access_token(patient_session)
-    return AuthResponse(
-        access_token=token,
-        patient=PatientProfile(
-            patient_id=patient_session.patient_id,
-            full_name=patient_session.full_name,
-            email=patient_session.email,
-            phone=patient_session.phone,
-            consent_granted=patient_session.consent_granted,
-            auth_via=patient_session.auth_via,
-        ),
-    )
+def _require_supabase() -> None:
+    if not get_settings().supabase_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Supabase auth is not configured (set SUPABASE_URL)",
+        )
 
 
-@router.post("/login", response_model=AuthResponse)
-def login_email(body: LoginEmailRequest) -> AuthResponse:
-    patient = authenticate_email(body.email, body.password)
-    if patient is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    return _auth_response(
-        session_from_patient(patient, auth_via="email", display_name=body.full_name)
-    )
-
-
-@router.post("/otp/request", response_model=OtpRequestResponse)
-def request_otp(body: OtpRequestRequest) -> OtpRequestResponse:
-    if patient_for_phone(body.phone) is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=404, detail="Phone number not registered in demo")
-    return OtpRequestResponse(
-        message="Verification code sent (demo — no real SMS).",
-        demo_code=DEMO_OTP_CODE,
-    )
-
-
-@router.post("/otp/verify", response_model=AuthResponse)
-def verify_otp_login(body: OtpVerifyRequest) -> AuthResponse:
-    if not verify_otp(body.code):
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=401, detail="Invalid verification code")
-    patient = patient_for_phone(body.phone)
-    if patient is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=404, detail="Phone number not registered in demo")
-    return _auth_response(
-        session_from_patient(patient, auth_via="phone", display_name=body.full_name)
-    )
-
-
-@router.get("/me", response_model=PatientProfile)
-def me(session=Depends(get_required_session)) -> PatientProfile:
+def _to_profile(session: PatientSession) -> PatientProfile:
     return PatientProfile(
         patient_id=session.patient_id,
         full_name=session.full_name,
@@ -91,20 +29,34 @@ def me(session=Depends(get_required_session)) -> PatientProfile:
     )
 
 
-@router.post("/consent", response_model=AuthResponse)
-def update_consent(body: ConsentRequest, session=Depends(get_required_session)) -> AuthResponse:
-    token = reissue_with_consent(session, body.granted)
-    return AuthResponse(
-        access_token=token,
-        patient=PatientProfile(
-            patient_id=session.patient_id,
-            full_name=session.full_name,
-            email=session.email,
-            phone=session.phone,
-            consent_granted=body.granted,
-            auth_via=session.auth_via,
-        ),
-    )
+@router.post("/profile", response_model=PatientProfile)
+def upsert_profile(
+    body: ProfileUpsertRequest,
+    token: str = Depends(get_bearer_token),
+) -> PatientProfile:
+    _require_supabase()
+    claims = decode_supabase_access_token(token)
+    if claims is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
+    session = sync_profile_from_claims(claims, body.full_name)
+    return _to_profile(session)
+
+
+@router.get("/me", response_model=PatientProfile)
+def me(session: PatientSession = Depends(get_required_session)) -> PatientProfile:
+    _require_supabase()
+    return _to_profile(session)
+
+
+@router.post("/consent", response_model=PatientProfile)
+def update_consent(
+    body: ConsentRequest,
+    session: PatientSession = Depends(get_required_session),
+) -> PatientProfile:
+    _require_supabase()
+    row = set_consent(session.patient_id, body.granted)
+    updated = profile_to_session(row, session.auth_via)
+    return _to_profile(updated)
 
 
 @router.post("/logout")

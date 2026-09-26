@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { runAgent } from "./api/agent";
-import { fetchMe } from "./api/auth";
+import { fetchMe, signOut } from "./api/auth";
 import { AmbientBackground } from "./components/AmbientBackground";
 import { ChatPanel } from "./components/ChatPanel";
 import { HeroStrip } from "./components/HeroStrip";
@@ -56,6 +56,10 @@ export default function App() {
       const response = await runAgent({
         message: text,
         conversation_id: conversationId,
+        chat_history: [
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+          { role: "user", content: text },
+        ],
       });
 
       setConversationId(response.conversation_id);
@@ -73,18 +77,31 @@ export default function App() {
     }
   }, [conversationId, draft, loading]);
 
-  const startNewConversation = () => {
+  const startNewConversation = useCallback(() => {
     setMessages([]);
     setConversationId(null);
     setLastRun(null);
     setCurrentStep(undefined);
     setError(null);
     setDraft("");
-  };
+  }, []);
+
+  const handleAuthenticated = useCallback(
+    (profile: PatientProfile, options?: { resetChat?: boolean }) => {
+      if (options?.resetChat) {
+        startNewConversation();
+      }
+      setPatient(profile);
+    },
+    [startNewConversation],
+  );
 
   const handleSignOut = () => {
-    clearAccessToken();
-    setPatient(null);
+    startNewConversation();
+    void signOut().finally(() => {
+      clearAccessToken();
+      setPatient(null);
+    });
   };
 
   const headerLabel = patient
@@ -108,7 +125,7 @@ export default function App() {
         <motion.div className="flex flex-col gap-4 lg:col-span-3" variants={fadeUp}>
           <LoginPanel
             patient={patient}
-            onAuthenticated={setPatient}
+            onAuthenticated={handleAuthenticated}
             onLogout={handleSignOut}
             onNewConversation={startNewConversation}
           />

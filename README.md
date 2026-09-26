@@ -2,11 +2,15 @@
 
 Policy-bounded healthcare appointment scheduling agent (2-day implementation plan).
 
-## Day 1 progress (through morning break)
+## Day 1 — complete
+
+See [docs/day-1.md](docs/day-1.md). Book/cancel via chat after sign-in + consent.
+
+## Day 1 progress (summary)
 
 - Monorepo: `backend/`, `frontend/`, `tests/`, `datasets/`
-- FastAPI backend, React + Vite + Tailwind scaffold, PostgreSQL via Docker Compose
-- PostgreSQL via **psycopg** + raw SQL (`backend/db/schema.sql`): patients, doctors, appointments, conversations, messages, agent runs, tool calls, policy decisions, audit events
+- FastAPI backend, React + Vite + Tailwind scaffold
+- **Supabase Auth** (frontend) + JWT verification on the API; **Supabase Postgres** via `DATABASE_URL` and **psycopg** + raw SQL (`backend/db/schema.sql`)
 - LangGraph workflow: Intent → Identity → Consent → Action → Policy → Tool → Result validation → Response → Audit
 - Structured intent classification (`BOOK_APPOINTMENT`, `CANCEL_APPOINTMENT`, `SEARCH_DOCTOR`, `CHECK_APPOINTMENT`, `UNKNOWN`) with entity extraction
 - Mock intent provider for local dev; OpenRouter when `AGENT_PROVIDER=openrouter`
@@ -28,7 +32,8 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/agent/run \
 
 ```bash
 make test
-make start                  # Docker: Postgres + API + chat UI (http://localhost:5173)
+make start                  # Docker: API + chat UI (http://localhost:5173)
 ```
 
-See [docs/day-1-morning.md](docs/day-1-morning.md) for details.
+Configure Supabase first: [docs/supabase.md](docs/supabase.md).
+
