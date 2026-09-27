@@ -37,6 +37,10 @@ Voice (`voice_worker/`) runs as a second **free** Render web service when deploy
 
 Local-only alternative: `docker compose up voice-worker` with production API URL in `REGULA_BACKEND_URL`.
 
+### Voice worker on GCP (recommended if Render OOMs)
+
+Use a small **Compute Engine** VM (default **e2-small**, 2 GB RAM) instead of Render for `voice_worker` only. Step-by-step: **[docs/gcp-voice-worker.md](gcp-voice-worker.md)** (`deploy/gcp/provision-voice-gce.sh`). Set Vercel `VITE_VOICE_WAKE_URL` to `http://YOUR_VM_IP:8080/` and suspend Render `regula-agent-voice` so a single `regula-voice` agent registers.
+
 ## Architecture
 
 - The browser loads the static app from Vercel.

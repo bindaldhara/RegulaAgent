@@ -1,0 +1,25 @@
+# Build RegulaAgent voice worker image → Artifact Registry
+# Run from repo root:
+#   gcloud builds submit --config deploy/gcp/cloudbuild.yaml .
+substitutions:
+  _REGION: asia-south1
+  _REPOSITORY: regula
+  _IMAGE: voice-worker
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - docker/voice.Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE}:${SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE}:latest
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

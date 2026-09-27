@@ -46,9 +46,16 @@ export async function wakeProductionVoiceWorker(): Promise<void> {
     try {
       await fetch(url, { method: "GET", cache: "no-store" });
     } catch {
-      /* cold start may abort; still helps Render spin up */
+      /* cold start may abort; still helps spin up */
     }
   };
+  const customWake = import.meta.env.VITE_VOICE_WAKE_URL?.trim();
+  if (customWake) {
+    await wake(customWake);
+    await new Promise((resolve) => window.setTimeout(resolve, 3_000));
+    return;
+  }
+  if (!import.meta.env.PROD) return;
   await wake("https://regula-agent-api.onrender.com/health");
   await wake("https://regula-agent-voice.onrender.com/");
   await new Promise((resolve) => window.setTimeout(resolve, 10_000));

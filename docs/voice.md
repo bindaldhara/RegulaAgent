@@ -79,12 +79,22 @@ If it still happens: open the browser **console** for the error, confirm chat st
 
    ```bash
    cd voice_worker
+   python3 -m venv .venv
+   source .venv/bin/activate   # Windows: .venv\Scripts\activate
    pip install -r requirements.txt
+   brew install ffmpeg         # macOS — required for Edge TTS → PCM
+   ```
+
+   Load env from the repo root `.env` (the worker reads `../.env` automatically), or export:
+
+   ```bash
    export LIVEKIT_URL=... LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=...
-   export REGULA_BACKEND_URL=http://127.0.0.1:8000
+   export REGULA_BACKEND_URL=http://127.0.0.1:8000   # or https://regula-agent-api.onrender.com
    export GROQ_API_KEY=...   # free at console.groq.com
    python main.py dev
    ```
+
+   Use the venv Python (`source .venv/bin/activate`) — system `python3` will not have `httpx` until you install there.
 
 4. Frontend: `npm install` in `frontend/`, then `npm run dev`.
 5. Sign in → click **Voice** next to **Send** in the chat composer.
