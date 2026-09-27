@@ -78,3 +78,5 @@ services:
         value: en-US-JennyNeural
       - key: RENDER
         value: "true"
+      - key: OTEL_SDK_DISABLED
+        value: "true"

@@ -40,7 +40,10 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("regula-voice")
-VOICE_WORKER_BUILD = "2026-03-27-render-process0"
+# Loop-monitor "event loop blocked" warnings are common on Render free tier during
+# SSL/VAD/telemetry setup; they are not fatal. Keep Regula logs at INFO.
+logging.getLogger("livekit.agents").setLevel(logging.WARNING)
+VOICE_WORKER_BUILD = "2026-03-27-render-telemetry-off"
 _RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))
 
 # LiveKit plugins must register on each process main thread before prewarm/job code runs.
@@ -323,7 +326,7 @@ async def entrypoint(ctx: JobContext) -> None:
         VOICE_WORKER_BUILD,
     )
 
-    http = _make_http_client()
+    http = await asyncio.to_thread(_make_http_client)
     state = RegulaSessionState(session_meta, ctx.room, http)
 
     async def _close_http() -> None:
@@ -344,6 +347,7 @@ async def entrypoint(ctx: JobContext) -> None:
         asyncio.create_task(state.on_transcript_ui(event))
 
     await ctx.connect()
+    # Free-tier Render: cloud recording/OTEL setup blocks the agent loop for seconds.
     await session.start(
         agent=RegulaVoiceAgent(state),
         room=ctx.room,
@@ -351,11 +355,15 @@ async def entrypoint(ctx: JobContext) -> None:
             close_on_disconnect=False,
             delete_room_on_close=False,
         ),
+        record=False,
     )
 
 
 if __name__ == "__main__":
-    # Render free tier: `start` in Docker CMD but dev worker settings fit 512Mi better.
-    if os.getenv("RENDER") == "true" and len(sys.argv) >= 2 and sys.argv[1] == "start":
+    # Render free tier: use dev worker settings (lighter than production start).
+    on_render = os.getenv("RENDER", "").lower() in ("true", "1", "yes") or bool(
+        os.getenv("RENDER_SERVICE_ID")
+    )
+    if on_render and len(sys.argv) >= 2 and sys.argv[1] == "start":
         sys.argv[1] = "dev"
     cli.run_app(server)
