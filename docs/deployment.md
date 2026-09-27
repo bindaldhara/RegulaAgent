@@ -29,11 +29,13 @@ Free Render services spin down after inactivity; the first request after idle ca
 
 ### Private GitHub repo
 
-Render must be allowed to clone `bindaldhara/RegulaAgent`: [Render → Account Settings → GitHub](https://dashboard.render.com/u/settings#integrations) → configure access and enable this repository.
+If the repo is private, Render must be allowed to clone it: [Render → Account Settings → GitHub](https://dashboard.render.com/u/settings#integrations) → configure access and enable this repository.
 
 **Option A — Blueprint:** open [Render Blueprint deploy](https://dashboard.render.com/select-repo?type=blueprint), select `RegulaAgent`, and apply the repo’s `render.yaml`. Paste secret env vars when prompted (`sync: false` keys).
 
 **Option B — Manual web service:** New → Web Service → repo `RegulaAgent`, Docker, `docker/backend.Dockerfile`, context `.`, plan **Free**, region **Singapore**, health path `/health`.
+
+**Live service (MCP):** [regula-agent-api](https://regula-agent-api.onrender.com) — dashboard [Render](https://dashboard.render.com/web/srv-dascrk17lnhs738l971g).
 
 ## Vercel — frontend
 
