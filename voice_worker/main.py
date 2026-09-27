@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -354,4 +355,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 if __name__ == "__main__":
+    # Render free tier: `start` in Docker CMD but dev worker settings fit 512Mi better.
+    if os.getenv("RENDER") == "true" and len(sys.argv) >= 2 and sys.argv[1] == "start":
+        sys.argv[1] = "dev"
     cli.run_app(server)

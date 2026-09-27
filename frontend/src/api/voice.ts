@@ -39,3 +39,17 @@ export async function fetchVoiceToken(params: {
   }
   return response.json() as Promise<VoiceTokenResponse>;
 }
+
+/** Wake Render free-tier voice worker before requesting a LiveKit token. */
+export async function wakeProductionVoiceWorker(): Promise<void> {
+  const wake = async (url: string) => {
+    try {
+      await fetch(url, { method: "GET", cache: "no-store" });
+    } catch {
+      /* cold start may abort; still helps Render spin up */
+    }
+  };
+  await wake("https://regula-agent-api.onrender.com/health");
+  await wake("https://regula-agent-voice.onrender.com/");
+  await new Promise((resolve) => window.setTimeout(resolve, 10_000));
+}

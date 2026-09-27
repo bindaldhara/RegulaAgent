@@ -6,9 +6,9 @@ import {
   useRemoteParticipants,
   useRoomContext,
 } from "@livekit/components-react";
-import { ConnectionState, DisconnectReason, RoomEvent } from "livekit-client";
+import { ConnectionState, DisconnectReason, ParticipantKind, RoomEvent } from "livekit-client";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { fetchVoiceStatus, fetchVoiceToken } from "../api/voice";
+import { fetchVoiceStatus, fetchVoiceToken, wakeProductionVoiceWorker } from "../api/voice";
 import type { AgentRunResponse, ChatHistoryTurn } from "../types/agent";
 import { GlassCard } from "./GlassCard";
 
@@ -64,7 +64,7 @@ function VoiceControls({
               : "bg-amber-500/15 text-amber-200"
           }`}
         >
-          {agentConnected ? "Agent in room" : "Waiting for agent…"}
+          {agentConnected ? "Agent in room" : import.meta.env.PROD ? "Joining agent (~30s)…" : "Waiting for agent…"}
         </span>
         {showEndButton ? (
           <button
@@ -103,6 +103,7 @@ export function VoicePanel({
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
+  const [agentLive, setAgentLive] = useState(false);
   const [agentName, setAgentName] = useState("regula-voice");
   const userEndedRef = useRef(false);
   const [linkDropped, setLinkDropped] = useState(false);
@@ -121,9 +122,13 @@ export function VoicePanel({
     setError(null);
     setLiveTranscript("");
     setLinkDropped(false);
+    setAgentLive(false);
     userEndedRef.current = false;
     setStarting(true);
     try {
+      if (import.meta.env.PROD) {
+        await wakeProductionVoiceWorker();
+      }
       const creds = await fetchVoiceToken({
         conversation_id: conversationId,
         chat_history: chatHistory,
@@ -142,6 +147,7 @@ export function VoicePanel({
     setSession(null);
     setLiveTranscript("");
     setLinkDropped(false);
+    setAgentLive(false);
   }, []);
 
   const handleRoomDisconnected = useCallback(
@@ -167,7 +173,7 @@ export function VoicePanel({
         title={signedIn ? "Start voice (LiveKit)" : "Sign in to use voice"}
         className="shrink-0 rounded-full border border-violet-400/35 bg-violet-600/25 px-4 py-3 text-sm font-medium text-violet-100 hover:bg-violet-600/40 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {starting ? "…" : "Voice"}
+        {starting ? "Waking voice…" : "Voice"}
       </button>
     ) : (
       <button
@@ -196,10 +202,15 @@ export function VoicePanel({
       >
         <StartAudio label="Enable speaker" />
         <RoomAudioRenderer />
-        <VoiceRoomDataBridge onAgentTurn={onAgentTurn} onTranscript={setLiveTranscript} />
+        <VoiceRoomDataBridge
+          onAgentTurn={onAgentTurn}
+          onTranscript={setLiveTranscript}
+          onAgentLive={() => setAgentLive(true)}
+        />
         <VoiceSessionStatus
           liveTranscript={liveTranscript}
           agentName={agentName}
+          agentLive={agentLive}
           onDisconnect={endVoice}
           showEndButton={!footer}
         />
@@ -264,26 +275,57 @@ export function VoicePanel({
 function VoiceSessionStatus({
   liveTranscript,
   agentName,
+  agentLive,
   onDisconnect,
   showEndButton = true,
 }: {
   liveTranscript: string;
   agentName: string;
+  agentLive: boolean;
   onDisconnect: () => void;
   showEndButton?: boolean;
 }) {
+  const room = useRoomContext();
   const remotes = useRemoteParticipants();
-  const agentConnected = remotes.length > 0;
+  const [participantAgent, setParticipantAgent] = useState(false);
+
+  useEffect(() => {
+    const recompute = () => {
+      for (const participant of room.remoteParticipants.values()) {
+        if (
+          participant.kind === ParticipantKind.AGENT ||
+          participant.kind === ParticipantKind.STANDARD ||
+          participant.identity.startsWith("agent")
+        ) {
+          setParticipantAgent(true);
+          return;
+        }
+      }
+      setParticipantAgent(remotes.length > 0);
+    };
+    recompute();
+    room.on(RoomEvent.ParticipantConnected, recompute);
+    room.on(RoomEvent.ParticipantDisconnected, recompute);
+    room.on(RoomEvent.TrackSubscribed, recompute);
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, recompute);
+      room.off(RoomEvent.ParticipantDisconnected, recompute);
+      room.off(RoomEvent.TrackSubscribed, recompute);
+    };
+  }, [room, remotes.length]);
+
+  const agentConnected = agentLive || participantAgent;
   const [showHint, setShowHint] = useState(false);
+  const hintDelayMs = import.meta.env.PROD ? 55_000 : 12_000;
 
   useEffect(() => {
     if (agentConnected) {
       setShowHint(false);
       return;
     }
-    const timer = window.setTimeout(() => setShowHint(true), 12_000);
+    const timer = window.setTimeout(() => setShowHint(true), hintDelayMs);
     return () => window.clearTimeout(timer);
-  }, [agentConnected]);
+  }, [agentConnected, hintDelayMs]);
 
   return (
     <>
@@ -297,11 +339,18 @@ function VoiceSessionStatus({
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
           {import.meta.env.PROD ? (
             <>
-              No voice agent in the room yet. Production voice runs on Render (
-              <code className="text-amber-200">regula-agent-voice</code>); free instances sleep when
-              idle — end voice, wait up to ~2 minutes, and try again. Agent must be{" "}
-              <code className="text-amber-200">{agentName}</code>. See{" "}
-              <code className="text-amber-200">docs/deployment.md</code>.
+              Still waiting after ~1 minute? On the free Render plan the voice worker can take{" "}
+              <strong>30–60 seconds</strong> to join after you click Voice. Keep this tab open, or end
+              voice and try again after{" "}
+              <a
+                className="text-amber-200 underline"
+                href="https://regula-agent-voice.onrender.com"
+                target="_blank"
+                rel="noreferrer"
+              >
+                opening the worker URL
+              </a>{" "}
+              to wake it. Agent name: <code className="text-amber-200">{agentName}</code>.
             </>
           ) : (
             <>
@@ -321,9 +370,11 @@ function VoiceSessionStatus({
 function VoiceRoomDataBridge({
   onAgentTurn,
   onTranscript,
+  onAgentLive,
 }: {
   onAgentTurn: VoicePanelProps["onAgentTurn"];
   onTranscript: (text: string) => void;
+  onAgentLive: () => void;
 }) {
   const room = useRoomContext();
 
@@ -355,11 +406,13 @@ function VoiceRoomDataBridge({
         };
 
         if (data.type === "transcript" && data.text) {
+          onAgentLive();
           onTranscript(data.final ? data.text : `${data.text}…`);
           return;
         }
 
         if (data.type === "agent_greeting" && data.reply) {
+          onAgentLive();
           onAgentTurn({
             userMessage: "",
             reply: data.reply,
@@ -368,6 +421,7 @@ function VoiceRoomDataBridge({
         }
 
         if (data.type !== "agent_turn" || !data.user_message || !data.reply) return;
+        onAgentLive();
         onTranscript(data.user_message);
         onAgentTurn({
           userMessage: data.user_message,
@@ -395,7 +449,7 @@ function VoiceRoomDataBridge({
     return () => {
       room.off(RoomEvent.DataReceived, handler);
     };
-  }, [room, onAgentTurn, onTranscript]);
+  }, [room, onAgentTurn, onTranscript, onAgentLive]);
 
   return null;
 }

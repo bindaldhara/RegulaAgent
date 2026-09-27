@@ -76,3 +76,5 @@ services:
         value: whisper-large-v3-turbo
       - key: VOICE_EDGE_TTS_VOICE
         value: en-US-JennyNeural
+      - key: RENDER
+        value: "true"
