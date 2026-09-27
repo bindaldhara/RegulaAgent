@@ -314,16 +314,21 @@ function SpeakerUnlockBanner({
   const [blocked, setBlocked] = useState(false);
 
   useEffect(() => {
-    const sync = () => setBlocked(!room.canPlaybackAudio);
+    const sync = () => {
+      const blockedPlayback = !room.canPlaybackAudio;
+      setBlocked(blockedPlayback);
+      if (!blockedPlayback && awaitingGreetingAudio) {
+        onUnlocked();
+      }
+    };
     sync();
     room.on(RoomEvent.AudioPlaybackStatusChanged, sync);
     return () => {
       room.off(RoomEvent.AudioPlaybackStatusChanged, sync);
     };
-  }, [room]);
+  }, [room, awaitingGreetingAudio, onUnlocked]);
 
-  const show = blocked || awaitingGreetingAudio;
-  if (!show) return null;
+  if (!blocked) return null;
 
   return (
     <button
