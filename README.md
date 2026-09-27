@@ -38,3 +38,7 @@ Configure Supabase first: [docs/supabase.md](docs/supabase.md).
 
 Optional voice: [docs/voice.md](docs/voice.md) (LiveKit + `voice_worker`).
 
+Evaluation UI + DeepEval: [docs/evaluation.md](docs/evaluation.md).
+
+Production (Vercel + Render, free tier): [docs/deployment.md](docs/deployment.md).
+
