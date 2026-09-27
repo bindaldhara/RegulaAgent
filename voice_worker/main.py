@@ -47,7 +47,7 @@ logger = logging.getLogger("regula-voice")
 # Loop-monitor "event loop blocked" warnings are common on Render free tier during
 # SSL/VAD/telemetry setup; they are not fatal. Keep Regula logs at INFO.
 logging.getLogger("livekit.agents").setLevel(logging.WARNING)
-VOICE_WORKER_BUILD = "2026-03-27-stream-tts-oom-fix"
+VOICE_WORKER_BUILD = "2026-03-27-edge-tts-segment-fix"
 CLIENT_AUDIO_WAIT_SEC = float(os.getenv("VOICE_CLIENT_AUDIO_WAIT_SEC", "20"))
 GREETING_PLAYOUT_TIMEOUT_SEC = float(os.getenv("VOICE_GREETING_PLAYOUT_TIMEOUT_SEC", "45"))
 _RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))

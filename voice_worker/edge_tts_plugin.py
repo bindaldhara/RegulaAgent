@@ -42,12 +42,13 @@ class EdgeTTS(tts.TTS):
 class _EdgeChunkedStream(tts.ChunkedStream):
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         voice = self._tts._voice  # type: ignore[attr-defined]
+        # stream=False: one segment via push()+flush() (stream=True needs start_segment()).
         output_emitter.initialize(
             request_id="edge-tts",
             sample_rate=SAMPLE_RATE,
             num_channels=NUM_CHANNELS,
             mime_type="audio/pcm",
-            stream=True,
+            stream=False,
         )
 
         proc = await asyncio.create_subprocess_exec(
@@ -85,12 +86,13 @@ class _EdgeChunkedStream(tts.ChunkedStream):
                 proc.stdin.close()
 
         feed_task = asyncio.create_task(_feed_mpeg())
+        pcm = bytearray()
         try:
             while True:
-                pcm = await proc.stdout.read(_PCM_READ_BYTES)
-                if not pcm:
+                block = await proc.stdout.read(_PCM_READ_BYTES)
+                if not block:
                     break
-                output_emitter.push(pcm)
+                pcm.extend(block)
         finally:
             await feed_task
             rc = await proc.wait()
@@ -99,4 +101,8 @@ class _EdgeChunkedStream(tts.ChunkedStream):
                 logger.error("ffmpeg mp3→pcm failed: %s", err)
                 raise RuntimeError(f"ffmpeg mp3→pcm failed: {err}")
 
+        if not pcm:
+            raise RuntimeError("Edge TTS produced no audio")
+        logger.info("Edge TTS pcm_bytes=%d text_chars=%d", len(pcm), len(self.input_text))
+        output_emitter.push(bytes(pcm))
         output_emitter.flush()
