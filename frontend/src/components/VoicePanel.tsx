@@ -295,11 +295,23 @@ function VoiceSessionStatus({
       />
       {showHint && !agentConnected ? (
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
-          No voice agent joined yet. Start the <strong>voice-worker</strong> container and check logs:{" "}
-          <code className="text-amber-200">docker compose logs -f voice-worker</code>. It must register
-          agent <code className="text-amber-200">{agentName}</code>. Check{" "}
-          <code className="text-amber-200">GROQ_API_KEY</code> (free STT) in <code className="text-amber-200">.env</code> — see{" "}
-          <code className="text-amber-200">docs/voice.md</code>.
+          {import.meta.env.PROD ? (
+            <>
+              No voice agent in the room yet. Production voice runs on Render (
+              <code className="text-amber-200">regula-agent-voice</code>); free instances sleep when
+              idle — end voice, wait up to ~2 minutes, and try again. Agent must be{" "}
+              <code className="text-amber-200">{agentName}</code>. See{" "}
+              <code className="text-amber-200">docs/deployment.md</code>.
+            </>
+          ) : (
+            <>
+              No voice agent joined yet. Start the <strong>voice-worker</strong> container and check logs:{" "}
+              <code className="text-amber-200">docker compose logs -f voice-worker</code>. It must register
+              agent <code className="text-amber-200">{agentName}</code>. Check{" "}
+              <code className="text-amber-200">GROQ_API_KEY</code> (free STT) in <code className="text-amber-200">.env</code> — see{" "}
+              <code className="text-amber-200">docs/voice.md</code>.
+            </>
+          )}
         </p>
       ) : null}
     </>

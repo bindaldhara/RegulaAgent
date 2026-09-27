@@ -1,12 +1,34 @@
 # Deployment (Vercel + Render, free tier)
 
+## Free tier only (no paid hosting)
+
+This project is set up to use **free plans only** on Vercel and Render:
+
+| Service | Name | Plan (must stay) |
+|---------|------|------------------|
+| Vercel | `regula-agent` | **Hobby** — do not enable Pro or paid add-ons |
+| Render | `regula-agent-api` | **Free** web service |
+| Render | `regula-agent-voice` | **Free** web service |
+
+Do **not** upgrade these to Starter/Standard on Render or Pro on Vercel. In the Render dashboard, confirm **Instance type → Free** for both services.
+
+**Third-party free tiers** (usage limits apply; overages are on your accounts, not Vercel/Render):
+
+- **Supabase** — free project for Postgres + Auth  
+- **LiveKit Cloud** — free tier for WebRTC rooms  
+- **Groq** — free API key for voice STT (`GROQ_API_KEY`)  
+- **OpenRouter** — use `OPENROUTER_MODEL=openrouter/free` to avoid paid models  
+- **Edge TTS** — no key (used by voice worker)
+
+Paid voice modes (`VOICE_AUDIO_MODE=openai`, etc.) are not used in production env on Render.
+
 | Component | Platform | Plan |
 |-----------|----------|------|
 | React UI (`frontend/`) | [Vercel](https://vercel.com) | Hobby (free) |
 | FastAPI API (`backend/`) | [Render](https://render.com) | Free web service |
 | Postgres + Auth | Supabase | Free tier (configure locally) |
 
-Voice (`voice_worker/`) runs as a second **free** Render web service when deployed (see `render.yaml` / dashboard). It must stay running for LiveKit to dispatch `regula-voice`; free instances **spin down after ~15 minutes idle**, so the first voice session after idle may show “Waiting for agent…” until Render wakes the worker (~1–2 min).
+Voice (`voice_worker/`) runs as a second **free** Render web service when deployed (see `render.yaml` / dashboard). The worker is tuned for **512Mi** (`num_idle_processes=0`, thread executor). Free instances **spin down after ~15 minutes idle**, so the first voice session after idle may show “Waiting for agent…” until Render wakes the worker (~1–2 min). If voice repeatedly fails, check Render logs for **Out of memory** on `regula-agent-voice`.
 
 - **Worker URL (health only):** https://regula-agent-voice.onrender.com  
 - **Dashboard:** https://dashboard.render.com/web/srv-dasd0nojo6nc73b91m20  

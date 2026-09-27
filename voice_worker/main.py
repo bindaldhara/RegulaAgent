@@ -22,6 +22,7 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
+    JobExecutorType,
     JobProcess,
     UserInputTranscribedEvent,
     cli,
@@ -39,7 +40,8 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("regula-voice")
-VOICE_WORKER_BUILD = "2026-03-26-http-lifecycle"
+VOICE_WORKER_BUILD = "2026-03-27-render-512mb"
+_RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))
 REGULA_BACKEND_URL = os.getenv("REGULA_BACKEND_URL", "http://localhost:8000").rstrip("/")
 DATA_TOPIC = "regula.agent"
 VOICE_GREETING = (
@@ -284,7 +286,18 @@ class RegulaVoiceAgent(Agent):
         raise StopResponse()
 
 
-server = AgentServer(setup_fnc=prewarm)
+# Render free tier = 512Mi RAM. Default prod settings pre-warm multiple subprocesses
+# (Silero + STT) and OOM; threads + zero idle processes fit one voice job.
+server = AgentServer(
+    setup_fnc=prewarm,
+    port=_RENDER_HTTP_PORT,
+    num_idle_processes=0,
+    job_executor_type=JobExecutorType.THREAD,
+    load_threshold=0.99,
+    initialize_process_timeout=90.0,
+    job_memory_warn_mb=480,
+    job_memory_limit_mb=0,
+)
 
 
 @server.rtc_session(agent_name=os.getenv("LIVEKIT_AGENT_NAME", "regula-voice"))
