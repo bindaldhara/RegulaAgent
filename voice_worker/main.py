@@ -22,7 +22,6 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
-    JobExecutorType,
     JobProcess,
     UserInputTranscribedEvent,
     cli,
@@ -40,8 +39,11 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("regula-voice")
-VOICE_WORKER_BUILD = "2026-03-27-render-512mb"
+VOICE_WORKER_BUILD = "2026-03-27-render-process0"
 _RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))
+
+# LiveKit plugins must register on each process main thread before prewarm/job code runs.
+from livekit.plugins import groq as _groq_plugin  # noqa: F401
 REGULA_BACKEND_URL = os.getenv("REGULA_BACKEND_URL", "http://localhost:8000").rstrip("/")
 DATA_TOPIC = "regula.agent"
 VOICE_GREETING = (
@@ -286,15 +288,14 @@ class RegulaVoiceAgent(Agent):
         raise StopResponse()
 
 
-# Render free tier = 512Mi RAM. Default prod settings pre-warm multiple subprocesses
-# (Silero + STT) and OOM; threads + zero idle processes fit one voice job.
+# Render free tier = 512Mi RAM. Keep num_idle_processes=0 (no extra warm subprocesses).
+# Do not use THREAD executor — Groq/STT plugins must register on the process main thread.
 server = AgentServer(
     setup_fnc=prewarm,
     port=_RENDER_HTTP_PORT,
     num_idle_processes=0,
-    job_executor_type=JobExecutorType.THREAD,
     load_threshold=0.99,
-    initialize_process_timeout=90.0,
+    initialize_process_timeout=120.0,
     job_memory_warn_mb=480,
     job_memory_limit_mb=0,
 )

@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from edge_tts_plugin import EdgeTTS
+from livekit.plugins import groq
 
 
 def _is_openrouter_key(value: str | None) -> bool:
@@ -26,8 +27,6 @@ def _build_free() -> tuple[Any, Any]:
     - STT: Groq Whisper (free tier at https://console.groq.com)
     - TTS: Microsoft Edge TTS (no API key)
     """
-    from livekit.plugins import groq
-
     groq_key = (os.getenv("GROQ_API_KEY") or "").strip()
     if not groq_key:
         raise RuntimeError(
