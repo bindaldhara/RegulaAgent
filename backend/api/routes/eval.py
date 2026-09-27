@@ -21,6 +21,7 @@ def eval_status() -> EvalStatusResponse:
         judge_configured=judge_configured(),
         judge_model=model,
         case_count=len(list_eval_summaries()),
+        agent_provider_for_eval=settings.agent_provider,
     )
 
 

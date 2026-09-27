@@ -87,3 +87,19 @@ If the Render service URL differs from `regula-agent-api.onrender.com`, update t
 ## Deploy updates
 
 Push to `main`. Render and Vercel auto-deploy when connected to the GitHub repo.
+
+### Admin eval (`/admin`)
+
+The eval API lives on **Render** only (`/api/v1/admin/eval/*`). Vercel rewrites `/api/*` to the Render service (`frontend/vercel.json`).
+
+After merging eval changes, **redeploy the API** (push to `main` or **Manual Deploy** on `regula-agent-api`). Redeploy **Vercel** for the `/admin` UI and copy updates.
+
+Verify production:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://regula-agent-api.onrender.com/api/v1/admin/eval/cases
+```
+
+Expect **`200`** and a JSON array. **`404`** means the running API image is older than the eval feature — trigger a new Render build.
+
+The Docker image must include `datasets/` (see `docker/backend.Dockerfile` `COPY datasets /datasets`).

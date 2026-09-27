@@ -62,4 +62,4 @@ class EvalStatusResponse(BaseModel):
     judge_configured: bool
     judge_model: str | None = None
     case_count: int
-    agent_provider_for_eval: str = "mock"
+    agent_provider_for_eval: str = "auto"

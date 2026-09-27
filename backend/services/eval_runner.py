@@ -24,11 +24,6 @@ DEFAULT_CRITERIA = (
 )
 
 
-def _force_mock_agent_provider() -> None:
-    os.environ["AGENT_PROVIDER"] = "mock"
-    get_settings.cache_clear()
-
-
 def _judge_api_key(settings: Settings) -> str | None:
     key = (settings.openrouter_api_key or "").strip()
     if key:
@@ -226,7 +221,6 @@ def run_eval_case(case_id: str, *, threshold: float = DEFAULT_GEVAL_THRESHOLD) -
     if case is None:
         raise KeyError(case_id)
 
-    _force_mock_agent_provider()
     settings = get_settings()
 
     request = AgentRunRequest(

@@ -78,6 +78,20 @@ Details: [docs/deployment.md](docs/deployment.md) · Voice: [docs/voice.md](docs
 | Evaluation (`/admin`, DeepEval) | [docs/evaluation.md](docs/evaluation.md) |
 | Day 1 milestone | [docs/day-1.md](docs/day-1.md) |
 
+## Evaluation (admin)
+
+Open **`/admin`** on the frontend (e.g. http://localhost:5173/admin). Each case runs **`POST /api/v1/admin/eval/cases/{id}/run`**.
+
+Eval uses the **same `AGENT_PROVIDER` as the API** (not a separate mock override):
+
+| `AGENT_PROVIDER` | Eval agent behavior |
+|------------------|---------------------|
+| **`auto`** (typical) | OpenRouter LLM intent when `OPENROUTER_API_KEY` is set |
+| **`openrouter`** | Always LLM intent |
+| **`mock`** | Regex intent only (stable, no intent API cost) |
+
+G-Eval (reply judge) always uses `OPENROUTER_API_KEY` or `OPENAI_API_KEY`; optional `EVAL_JUDGE_MODEL`. See [docs/evaluation.md](docs/evaluation.md).
+
 ## Repo layout
 
 ```text

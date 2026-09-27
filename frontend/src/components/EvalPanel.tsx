@@ -29,6 +29,7 @@ export function EvalPanel({ className = "" }: { className?: string }) {
   const [cases, setCases] = useState<EvalCaseSummary[]>([]);
   const [results, setResults] = useState<Record<string, EvalRunResponse>>({});
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [runAllBusy, setRunAllBusy] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -57,6 +58,8 @@ export function EvalPanel({ className = "" }: { className?: string }) {
     })();
   }, []);
 
+  const anyRunBusy = Boolean(runningId) || runAllBusy;
+
   const handleRun = useCallback(async (caseId: string) => {
     setError(null);
     setRunningId(caseId);
@@ -71,17 +74,54 @@ export function EvalPanel({ className = "" }: { className?: string }) {
     }
   }, []);
 
+  const handleRunAll = useCallback(async () => {
+    if (cases.length === 0 || anyRunBusy) return;
+    setError(null);
+    setRunAllBusy(true);
+    for (const c of cases) {
+      setRunningId(c.id);
+      try {
+        const result = await runEvalCase(c.id);
+        setResults((prev) => ({ ...prev, [c.id]: result }));
+        setExpandedIds((prev) => new Set(prev).add(c.id));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `Eval run failed (${c.title})`);
+        break;
+      }
+    }
+    setRunningId(null);
+    setRunAllBusy(false);
+  }, [anyRunBusy, cases]);
+
+  const passCount = cases.filter((c) => results[c.id]?.passed).length;
+  const ranCount = cases.filter((c) => results[c.id]).length;
+
   return (
     <GlassCard className={`flex min-h-0 flex-col p-4 ${className}`} glow="violet">
       <div className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-white">Evaluation (DeepEval)</h2>
-        <p className="text-[11px] text-ms-muted">
-          Mock agent + G-Eval judge per case. Requires{" "}
-          <code className="text-zinc-500">OPENROUTER_API_KEY</code> on the API.
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <h2 className="text-sm font-semibold text-white">Evaluation (DeepEval)</h2>
+          <button
+            type="button"
+            disabled={cases.length === 0 || anyRunBusy}
+            onClick={() => void handleRunAll()}
+            className="shrink-0 rounded-lg border border-violet-400/40 bg-violet-600/20 px-3 py-1.5 text-[11px] font-medium text-violet-100 hover:bg-violet-600/35 disabled:opacity-40"
+          >
+            {runAllBusy
+              ? `Running… ${cases.find((x) => x.id === runningId)?.title ?? ""}`.trim()
+              : "Run all"}
+          </button>
+        </div>
+        {ranCount > 0 ? (
+          <p className="mt-1 text-[10px] text-zinc-500">
+            {passCount}/{ranCount} passed
+            {ranCount === cases.length ? " (full suite)" : ""}
+          </p>
+        ) : null}
         {status && (
           <p className="mt-1 text-[10px] text-zinc-500">
-            DeepEval: {status.deepeval_available ? "ready" : "missing"} · Judge:{" "}
+            Agent: {status.agent_provider_for_eval} · DeepEval:{" "}
+            {status.deepeval_available ? "ready" : "missing"} · Judge:{" "}
             {status.judge_configured ? status.judge_model ?? "configured" : "not configured"}
           </p>
         )}
@@ -139,7 +179,7 @@ export function EvalPanel({ className = "" }: { className?: string }) {
                 </button>
                 <button
                   type="button"
-                  disabled={busy || Boolean(runningId)}
+                  disabled={busy || anyRunBusy}
                   onClick={() => void handleRun(c.id)}
                   className="shrink-0 rounded-lg bg-violet-600/90 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-violet-500 disabled:opacity-40"
                 >
