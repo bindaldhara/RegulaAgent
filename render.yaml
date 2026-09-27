@@ -1,0 +1,48 @@
+# Render Blueprint — free-tier API (Docker)
+# Apply from: https://dashboard.render.com/select-repo?type=blueprint
+services:
+  - type: web
+    name: regula-agent-api
+    runtime: docker
+    plan: free
+    region: singapore
+    repo: https://github.com/bindaldhara/RegulaAgent
+    branch: main
+    dockerfilePath: docker/backend.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: AGENT_PROVIDER
+        value: openrouter
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: POSTGRES_HOST
+        sync: false
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_DB
+        sync: false
+      - key: POSTGRES_USER
+        sync: false
+      - key: POSTGRES_PASSWORD
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openrouter/free
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENROUTER_APP_URL
+        value: https://regula-agent.vercel.app
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: LIVEKIT_AGENT_NAME
+        value: regula-voice
