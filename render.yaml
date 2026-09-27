@@ -46,3 +46,33 @@ services:
         sync: false
       - key: LIVEKIT_AGENT_NAME
         value: regula-voice
+
+  - type: web
+    name: regula-agent-voice
+    runtime: docker
+    plan: free
+    region: singapore
+    repo: https://github.com/bindaldhara/RegulaAgent
+    branch: main
+    dockerfilePath: docker/voice.Dockerfile
+    dockerContext: .
+    dockerCommand: python main.py start
+    envVars:
+      - key: REGULA_BACKEND_URL
+        value: https://regula-agent-api.onrender.com
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: LIVEKIT_AGENT_NAME
+        value: regula-voice
+      - key: GROQ_API_KEY
+        sync: false
+      - key: VOICE_AUDIO_MODE
+        value: free
+      - key: VOICE_GROQ_STT_MODEL
+        value: whisper-large-v3-turbo
+      - key: VOICE_EDGE_TTS_VOICE
+        value: en-US-JennyNeural

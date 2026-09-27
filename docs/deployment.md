@@ -6,7 +6,12 @@
 | FastAPI API (`backend/`) | [Render](https://render.com) | Free web service |
 | Postgres + Auth | Supabase | Free tier (configure locally) |
 
-Voice (`voice_worker/`) is not deployed on Render in this setup; run it locally or add a separate worker service later.
+Voice (`voice_worker/`) runs as a second **free** Render web service when deployed (see `render.yaml` / dashboard). It must stay running for LiveKit to dispatch `regula-voice`; free instances **spin down after ~15 minutes idle**, so the first voice session after idle may show “Waiting for agent…” until Render wakes the worker (~1–2 min).
+
+- **Worker URL (health only):** https://regula-agent-voice.onrender.com  
+- **Dashboard:** https://dashboard.render.com/web/srv-dasd0nojo6nc73b91m20  
+
+Local-only alternative: `docker compose up voice-worker` with production API URL in `REGULA_BACKEND_URL`.
 
 ## Architecture
 
