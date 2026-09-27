@@ -28,7 +28,7 @@ Paid voice modes (`VOICE_AUDIO_MODE=openai`, etc.) are not used in production en
 | FastAPI API (`backend/`) | [Render](https://render.com) | Free web service |
 | Postgres + Auth | Supabase | Free tier (configure locally) |
 
-Voice (`voice_worker/`) runs as a second **free** Render web service when deployed (see `render.yaml` / dashboard). The worker is tuned for **512Mi** (`num_idle_processes=0`, thread executor). Free instances **spin down after ~15 minutes idle**, so the first voice session after idle may show “Waiting for agent…” until Render wakes the worker (~1–2 min). If voice repeatedly fails, check Render logs for **Out of memory** on `regula-agent-voice`.
+Voice (`voice_worker/`) runs as a second **free** Render web service when deployed (see `render.yaml` / dashboard). The worker is tuned for **512Mi** (`num_idle_processes=0`, process executor, streaming Edge TTS decode). If Render logs show **Out of memory**, close extra voice tabs and redeploy the latest worker; do not run multiple concurrent voice rooms on the free instance.
 
 **Log noise:** `event loop blocked` lines from `livekit.agents` are warnings (slow SSL/VAD on 512MB CPU), not necessarily a crash. The worker sets `record=False` and `OTEL_SDK_DISABLED=true` on Render to avoid telemetry deadlocks.
 

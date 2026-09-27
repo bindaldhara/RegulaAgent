@@ -6,13 +6,30 @@ import {
   useRemoteParticipants,
   useRoomContext,
 } from "@livekit/components-react";
-import { ConnectionState, DisconnectReason, ParticipantKind, RoomEvent } from "livekit-client";
+import { ConnectionState, DisconnectReason, ParticipantKind, Room, RoomEvent } from "livekit-client";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { fetchVoiceStatus, fetchVoiceToken, wakeProductionVoiceWorker } from "../api/voice";
 import type { AgentRunResponse, ChatHistoryTurn } from "../types/agent";
 import { GlassCard } from "./GlassCard";
 
 const DATA_TOPIC = "regula.agent";
+
+function publishVoiceControl(room: Room, type: "client_audio_ready" | "replay_greeting") {
+  const body = new TextEncoder().encode(JSON.stringify({ type }));
+  void room.localParticipant.publishData(body, { reliable: true, topic: DATA_TOPIC });
+}
+
+async function unlockSpeakerAndNotifyAgent(room: Room, replay = false) {
+  try {
+    await room.startAudio();
+  } catch {
+    /* banner stays visible */
+  }
+  publishVoiceControl(room, "client_audio_ready");
+  if (replay) {
+    publishVoiceControl(room, "replay_greeting");
+  }
+}
 
 interface VoicePanelProps {
   signedIn: boolean;
@@ -105,6 +122,7 @@ export function VoicePanel({
   const [liveTranscript, setLiveTranscript] = useState("");
   const [agentLive, setAgentLive] = useState(false);
   const [agentName, setAgentName] = useState("regula-voice");
+  const [awaitingGreetingAudio, setAwaitingGreetingAudio] = useState(false);
   const userEndedRef = useRef(false);
   const [linkDropped, setLinkDropped] = useState(false);
 
@@ -123,6 +141,7 @@ export function VoicePanel({
     setLiveTranscript("");
     setLinkDropped(false);
     setAgentLive(false);
+    setAwaitingGreetingAudio(false);
     userEndedRef.current = false;
     setStarting(true);
     try {
@@ -148,6 +167,7 @@ export function VoicePanel({
     setLiveTranscript("");
     setLinkDropped(false);
     setAgentLive(false);
+    setAwaitingGreetingAudio(false);
   }, []);
 
   const handleRoomDisconnected = useCallback(
@@ -201,12 +221,16 @@ export function VoicePanel({
         className="regula-voice-room__inner"
       >
         <StartAudio label="Enable speaker" />
-        <SpeakerUnlockBanner />
+        <SpeakerUnlockBanner
+          awaitingGreetingAudio={awaitingGreetingAudio}
+          onUnlocked={() => setAwaitingGreetingAudio(false)}
+        />
         <RoomAudioRenderer />
         <VoiceRoomDataBridge
           onAgentTurn={onAgentTurn}
           onTranscript={setLiveTranscript}
           onAgentLive={() => setAgentLive(true)}
+          onAgentGreeting={() => setAwaitingGreetingAudio(true)}
         />
         <VoiceSessionStatus
           liveTranscript={liveTranscript}
@@ -273,7 +297,13 @@ export function VoicePanel({
   );
 }
 
-function SpeakerUnlockBanner() {
+function SpeakerUnlockBanner({
+  awaitingGreetingAudio,
+  onUnlocked,
+}: {
+  awaitingGreetingAudio: boolean;
+  onUnlocked: () => void;
+}) {
   const room = useRoomContext();
   const [blocked, setBlocked] = useState(false);
 
@@ -286,17 +316,24 @@ function SpeakerUnlockBanner() {
     };
   }, [room]);
 
-  if (!blocked) return null;
+  const show = blocked || awaitingGreetingAudio;
+  if (!show) return null;
 
   return (
     <button
       type="button"
       onClick={() => {
-        void room.startAudio().then(() => setBlocked(!room.canPlaybackAudio));
+        void unlockSpeakerAndNotifyAgent(room, true).then(() => {
+          if (room.canPlaybackAudio) {
+            onUnlocked();
+          }
+          setBlocked(!room.canPlaybackAudio);
+        });
       }}
       className="mb-2 w-full rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-3 text-left text-sm font-medium text-emerald-100 hover:bg-emerald-500/25"
     >
-      Tap to hear Regula — your browser blocked autoplay. Required for the greeting and replies.
+      Tap to hear Regula speak — the greeting is in chat, but your browser needs permission to play
+      agent audio.
     </button>
   );
 }
@@ -349,8 +386,8 @@ function VoiceSessionStatus({
 
   useEffect(() => {
     if (!agentConnected) return;
-    void room.startAudio().catch(() => {
-      /* still blocked — SpeakerUnlockBanner handles it */
+    void unlockSpeakerAndNotifyAgent(room).catch(() => {
+      /* SpeakerUnlockBanner handles manual tap */
     });
   }, [agentConnected, room]);
 
@@ -407,10 +444,12 @@ function VoiceRoomDataBridge({
   onAgentTurn,
   onTranscript,
   onAgentLive,
+  onAgentGreeting,
 }: {
   onAgentTurn: VoicePanelProps["onAgentTurn"];
   onTranscript: (text: string) => void;
   onAgentLive: () => void;
+  onAgentGreeting: () => void;
 }) {
   const room = useRoomContext();
 
@@ -449,6 +488,10 @@ function VoiceRoomDataBridge({
 
         if (data.type === "agent_greeting" && data.reply) {
           onAgentLive();
+          onAgentGreeting();
+          void unlockSpeakerAndNotifyAgent(room).catch(() => {
+            /* user can tap the banner */
+          });
           onAgentTurn({
             userMessage: "",
             reply: data.reply,
@@ -485,7 +528,7 @@ function VoiceRoomDataBridge({
     return () => {
       room.off(RoomEvent.DataReceived, handler);
     };
-  }, [room, onAgentTurn, onTranscript, onAgentLive]);
+  }, [room, onAgentTurn, onTranscript, onAgentLive, onAgentGreeting]);
 
   return null;
 }

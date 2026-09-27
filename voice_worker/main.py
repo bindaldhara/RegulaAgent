@@ -38,12 +38,18 @@ _root_env = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_root_env)
 load_dotenv()
 
+# Keep ONNX/VAD footprint down on Render free tier (512Mi).
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("regula-voice")
 # Loop-monitor "event loop blocked" warnings are common on Render free tier during
 # SSL/VAD/telemetry setup; they are not fatal. Keep Regula logs at INFO.
 logging.getLogger("livekit.agents").setLevel(logging.WARNING)
-VOICE_WORKER_BUILD = "2026-03-27-greeting-pcm-speaker"
+VOICE_WORKER_BUILD = "2026-03-27-stream-tts-oom-fix"
+CLIENT_AUDIO_WAIT_SEC = float(os.getenv("VOICE_CLIENT_AUDIO_WAIT_SEC", "20"))
+GREETING_PLAYOUT_TIMEOUT_SEC = float(os.getenv("VOICE_GREETING_PLAYOUT_TIMEOUT_SEC", "45"))
 _RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))
 
 # LiveKit plugins must register on each process main thread before prewarm/job code runs.
@@ -103,18 +109,24 @@ def _fire_say(session: AgentSession, text: str, **kwargs: Any) -> None:
         asyncio.create_task(handle)
 
 
-async def _play_opening_greeting(session: AgentSession, room: rtc.Room) -> None:
-    logger.info("Playing opening greeting")
-    await _publish_greeting_to_ui(room)
-    try:
-        handle = session.say(VOICE_GREETING, allow_interruptions=False)
-        if asyncio.iscoroutine(handle):
-            handle = await handle
-        if handle is not None and hasattr(handle, "wait_for_playout"):
-            await handle.wait_for_playout()
-        logger.info("Opening greeting playout finished")
-    except Exception:
-        logger.exception("Opening greeting TTS failed")
+async def _play_opening_greeting(session: AgentSession, state: "RegulaSessionState") -> None:
+    async with state._greeting_lock:
+        if state._greeting_started:
+            return
+        state._greeting_started = True
+    logger.info("Playing opening greeting (waiting for client speaker unlock)")
+    state.bind_session(session)
+    await _publish_greeting_to_ui(state.room)
+    await state.wait_for_client_audio(timeout=CLIENT_AUDIO_WAIT_SEC)
+    await state.speak_greeting(force=False)
+
+
+async def _await_speech_playout(session: AgentSession, text: str, **kwargs: Any) -> None:
+    handle = session.say(text, **kwargs)
+    if asyncio.iscoroutine(handle):
+        handle = await handle
+    if handle is not None and hasattr(handle, "wait_for_playout"):
+        await asyncio.wait_for(handle.wait_for_playout(), timeout=GREETING_PLAYOUT_TIMEOUT_SEC)
 
 
 def _make_http_client() -> httpx.AsyncClient:
@@ -135,6 +147,53 @@ class RegulaSessionState:
         self.room = room
         self._http = http
         self._busy = False
+        self._session: AgentSession | None = None
+        self._client_audio_ready = asyncio.Event()
+        self._greeting_audio_done = False
+        self._greeting_started = False
+        self._greeting_lock = asyncio.Lock()
+
+    def bind_session(self, session: AgentSession) -> None:
+        self._session = session
+
+    def signal_client_audio(self) -> None:
+        self._client_audio_ready.set()
+
+    async def wait_for_client_audio(self, *, timeout: float) -> None:
+        if self._client_audio_ready.is_set():
+            return
+        try:
+            await asyncio.wait_for(self._client_audio_ready.wait(), timeout=timeout)
+            logger.info("client speaker unlocked")
+        except asyncio.TimeoutError:
+            logger.warning("client speaker unlock timeout (%.0fs); speaking anyway", timeout)
+
+    async def speak_greeting(self, *, force: bool) -> None:
+        if self._greeting_audio_done and not force:
+            return
+        session = self._session
+        if session is None:
+            logger.warning("speak_greeting skipped: no session")
+            return
+        try:
+            await _await_speech_playout(
+                session,
+                VOICE_GREETING,
+                allow_interruptions=False,
+            )
+            self._greeting_audio_done = True
+            logger.info("Opening greeting playout finished")
+        except asyncio.TimeoutError:
+            logger.warning("Opening greeting playout timed out")
+        except Exception:
+            logger.exception("Opening greeting TTS failed")
+
+    async def on_client_control(self, payload: dict[str, Any]) -> None:
+        msg_type = payload.get("type")
+        if msg_type == "client_audio_ready":
+            self.signal_client_audio()
+        elif msg_type == "replay_greeting" and self._session is not None:
+            await self.speak_greeting(force=True)
 
     def _http_client(self) -> httpx.AsyncClient:
         if self._http.is_closed:
@@ -286,13 +345,9 @@ class RegulaVoiceAgent(Agent):
             instructions="RegulaAgent voice scheduling. The server handles booking responses.",
         )
         self._state = state
-        self._greeted = False
 
     async def on_enter(self) -> None:
-        if self._greeted:
-            return
-        self._greeted = True
-        await _play_opening_greeting(self.session, self._state.room)
+        await _play_opening_greeting(self.session, self._state)
 
     async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
         text = (new_message.text_content or "").strip()
@@ -355,6 +410,17 @@ async def entrypoint(ctx: JobContext) -> None:
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(event: UserInputTranscribedEvent) -> None:
         asyncio.create_task(state.on_transcript_ui(event))
+
+    @ctx.room.on("data_received")
+    def _on_room_data(data: rtc.DataPacket) -> None:
+        topic = getattr(data, "topic", None) or ""
+        if topic and topic != DATA_TOPIC:
+            return
+        try:
+            payload = json.loads(data.data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        asyncio.create_task(state.on_client_control(payload))
 
     await ctx.connect()
     # Free-tier Render: cloud recording/OTEL setup blocks the agent loop for seconds.
