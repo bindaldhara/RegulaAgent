@@ -12,7 +12,15 @@ fi
 
 sudo mkdir -p /etc/regula
 sudo apt-get update -qq
-sudo apt-get install -y -qq docker.io
+sudo apt-get install -y -qq docker.io apt-transport-https ca-certificates gnupg curl
+if ! command -v gcloud >/dev/null; then
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq google-cloud-cli
+fi
+sudo gcloud auth configure-docker "${IMAGE%%/*}" --quiet 2>/dev/null || \
+  sudo gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
 sudo systemctl enable --now docker
 
 sudo docker pull "$IMAGE"
