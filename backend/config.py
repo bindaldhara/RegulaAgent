@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_app_url: str = "http://localhost:5173"
 
+    # G-Eval judge (defaults to openrouter_model). Prefer a paid mini model over :free for JSON scoring.
+    eval_judge_model: str | None = None
+
     livekit_url: str = ""
     livekit_api_key: str = ""
     livekit_api_secret: str = ""

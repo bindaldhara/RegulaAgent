@@ -44,6 +44,7 @@ services:
         required: false
     volumes:
       - ./backend:/app
+      - ./datasets:/datasets
 
   frontend:
     build:
