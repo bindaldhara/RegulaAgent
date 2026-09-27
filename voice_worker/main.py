@@ -43,7 +43,7 @@ logger = logging.getLogger("regula-voice")
 # Loop-monitor "event loop blocked" warnings are common on Render free tier during
 # SSL/VAD/telemetry setup; they are not fatal. Keep Regula logs at INFO.
 logging.getLogger("livekit.agents").setLevel(logging.WARNING)
-VOICE_WORKER_BUILD = "2026-03-27-render-telemetry-off"
+VOICE_WORKER_BUILD = "2026-03-27-greeting-pcm-speaker"
 _RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))
 
 # LiveKit plugins must register on each process main thread before prewarm/job code runs.
@@ -71,9 +71,9 @@ def _room_ready(room: rtc.Room) -> bool:
     )
 
 
-async def _publish_data(room: rtc.Room, payload: dict[str, Any], *, reliable: bool = True) -> None:
+async def _publish_data(room: rtc.Room, payload: dict[str, Any], *, reliable: bool = True) -> bool:
     if not _room_ready(room):
-        return
+        return False
     body = json.dumps(payload).encode("utf-8")
     try:
         await room.local_participant.publish_data(
@@ -81,16 +81,20 @@ async def _publish_data(room: rtc.Room, payload: dict[str, Any], *, reliable: bo
             reliable=reliable,
             topic=DATA_TOPIC,
         )
+        return True
     except Exception as exc:
-        logger.debug("publish_data skipped (%s): %s", payload.get("type"), exc)
+        logger.warning("publish_data failed (%s): %s", payload.get("type"), exc)
+        return False
 
 
 async def _publish_greeting_to_ui(room: rtc.Room) -> None:
     payload = {"type": "agent_greeting", "reply": VOICE_GREETING}
-    for delay in (0.0, 1.5):
-        if delay:
-            await asyncio.sleep(delay)
-        await _publish_data(room, payload)
+    for _ in range(24):
+        if await _publish_data(room, payload):
+            logger.info("agent_greeting sent to UI")
+            return
+        await asyncio.sleep(0.25)
+    logger.warning("agent_greeting not delivered (room not ready)")
 
 
 def _fire_say(session: AgentSession, text: str, **kwargs: Any) -> None:
@@ -101,10 +105,16 @@ def _fire_say(session: AgentSession, text: str, **kwargs: Any) -> None:
 
 async def _play_opening_greeting(session: AgentSession, room: rtc.Room) -> None:
     logger.info("Playing opening greeting")
-    asyncio.create_task(_publish_greeting_to_ui(room))
-    handle = session.say(VOICE_GREETING, allow_interruptions=False)
-    if asyncio.iscoroutine(handle):
-        await handle
+    await _publish_greeting_to_ui(room)
+    try:
+        handle = session.say(VOICE_GREETING, allow_interruptions=False)
+        if asyncio.iscoroutine(handle):
+            handle = await handle
+        if handle is not None and hasattr(handle, "wait_for_playout"):
+            await handle.wait_for_playout()
+        logger.info("Opening greeting playout finished")
+    except Exception:
+        logger.exception("Opening greeting TTS failed")
 
 
 def _make_http_client() -> httpx.AsyncClient:

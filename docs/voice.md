@@ -51,6 +51,7 @@ Voice calls use `voice_mode: true` on `POST /api/v1/agent/run` (skips Postgres a
 3. **`GROQ_API_KEY`** — Required for free STT (get a key at console.groq.com). TTS uses Edge and needs no key.
 4. **Scheduling consent** — Booking/cancel by voice still needs the consent checkbox (same as chat).
 5. **Opening line** — As soon as **Agent in room** appears, you should hear *“Hey! I'm Regula…”* (played from `on_enter`, not after the call ends). Speak only after that. If **Heard** stays empty, check mic permission and `docker compose logs voice-worker` for TTS errors.
+6. **No sound but “Agent in room”** — Browsers block autoplay unless you allow speaker output. On production, the Render wake can take 30–60s after you click **Voice**, so the click no longer counts as a “user gesture” for audio. Tap **Enable speaker** or the green **Tap to hear Regula** banner in the voice card. The greeting text should also appear in chat via the data channel even if audio is muted.
 
 ### `publisher data channel '_reliable' closed unexpectedly`
 

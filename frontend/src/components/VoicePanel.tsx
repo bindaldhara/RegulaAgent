@@ -201,6 +201,7 @@ export function VoicePanel({
         className="regula-voice-room__inner"
       >
         <StartAudio label="Enable speaker" />
+        <SpeakerUnlockBanner />
         <RoomAudioRenderer />
         <VoiceRoomDataBridge
           onAgentTurn={onAgentTurn}
@@ -272,6 +273,34 @@ export function VoicePanel({
   );
 }
 
+function SpeakerUnlockBanner() {
+  const room = useRoomContext();
+  const [blocked, setBlocked] = useState(false);
+
+  useEffect(() => {
+    const sync = () => setBlocked(!room.canPlaybackAudio);
+    sync();
+    room.on(RoomEvent.AudioPlaybackStatusChanged, sync);
+    return () => {
+      room.off(RoomEvent.AudioPlaybackStatusChanged, sync);
+    };
+  }, [room]);
+
+  if (!blocked) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void room.startAudio().then(() => setBlocked(!room.canPlaybackAudio));
+      }}
+      className="mb-2 w-full rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-3 text-left text-sm font-medium text-emerald-100 hover:bg-emerald-500/25"
+    >
+      Tap to hear Regula — your browser blocked autoplay. Required for the greeting and replies.
+    </button>
+  );
+}
+
 function VoiceSessionStatus({
   liveTranscript,
   agentName,
@@ -317,6 +346,13 @@ function VoiceSessionStatus({
   const agentConnected = agentLive || participantAgent;
   const [showHint, setShowHint] = useState(false);
   const hintDelayMs = import.meta.env.PROD ? 55_000 : 12_000;
+
+  useEffect(() => {
+    if (!agentConnected) return;
+    void room.startAudio().catch(() => {
+      /* still blocked — SpeakerUnlockBanner handles it */
+    });
+  }, [agentConnected, room]);
 
   useEffect(() => {
     if (agentConnected) {
