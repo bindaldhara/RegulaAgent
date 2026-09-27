@@ -1,44 +1,91 @@
 # RegulaAgent
 
-Policy-bounded healthcare appointment scheduling agent (2-day implementation plan).
+Policy-bounded healthcare appointment scheduling agent: chat and voice share the same LangGraph backend (intent, identity, consent, policy, tools, audit).
 
-## Day 1 — complete
+**Live app:** [regula-agent.vercel.app](https://regula-agent.vercel.app)
 
-See [docs/day-1.md](docs/day-1.md). Book/cancel via chat after sign-in + consent.
+## Architecture (production)
 
-## Day 1 progress (summary)
+| Component | Platform | Role |
+|-----------|----------|------|
+| **Frontend** | [Vercel](https://vercel.com) | React UI; `/api/*` proxied to the backend |
+| **API** | [Render](https://render.com) (`regula-agent-api`) | FastAPI: auth, chat, `POST /api/v1/agent/run`, voice token + agent dispatch |
+| **Voice worker** | [GCP Compute Engine](https://cloud.google.com/compute) | LiveKit agent: STT → API → TTS (see [docs/gcp-voice-worker.md](docs/gcp-voice-worker.md)) |
+| **Postgres + Auth** | [Supabase](https://supabase.com) | Users, profiles, consent |
+| **WebRTC** | [LiveKit Cloud](https://livekit.io) | Browser ↔ agent audio and data channel |
 
-- Monorepo: `backend/`, `frontend/`, `tests/`, `datasets/`
-- FastAPI backend, React + Vite + Tailwind scaffold
-- **Supabase Auth** (frontend) + JWT verification on the API; **Supabase Postgres** via `DATABASE_URL` and **psycopg** + raw SQL (`backend/db/schema.sql`)
-- LangGraph workflow: Intent → Identity → Consent → Action → Policy → Tool → Result validation → Response → Audit
-- Structured intent classification with entity extraction — **LLM via OpenRouter** by default (`AGENT_PROVIDER=auto`); mock regex for tests — see [docs/intent.md](docs/intent.md)
+Voice scheduling logic stays on the **API**; the worker is only realtime audio glue. Do not run two workers with the same `LIVEKIT_AGENT_NAME` (e.g. suspend Render `regula-agent-voice` when using GCP).
 
-## Quick start
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r backend/requirements.txt
-pip install pytest httpx
-AGENT_PROVIDER=mock uvicorn main:app --app-dir backend --reload
+```text
+Browser (Vercel) ──HTTP──► Render API ──► OpenRouter + Supabase
+Browser ──WebRTC──► LiveKit ◄── GCP voice worker ──HTTP──► Render API
 ```
 
-```bash
-curl -s -X POST http://127.0.0.1:8000/api/v1/agent/run \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"Book a cardiologist tomorrow."}' | python3 -m json.tool
+Details: [docs/deployment.md](docs/deployment.md) · Voice: [docs/voice.md](docs/voice.md)
+
+## Quick start (local)
+
+1. Copy `.env.example` → `.env` and configure Supabase ([docs/supabase.md](docs/supabase.md)), optional OpenRouter and LiveKit.
+
+2. **API**
+
+   ```bash
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r backend/requirements.txt
+   AGENT_PROVIDER=mock uvicorn main:app --app-dir backend --reload
+   ```
+
+3. **Frontend**
+
+   ```bash
+   cd frontend && npm install && npm run dev
+   ```
+
+4. **Voice (optional)** — second terminal:
+
+   ```bash
+   cd voice_worker
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   brew install ffmpeg   # macOS
+   python main.py dev
+   ```
+
+   See [docs/voice.md](docs/voice.md).
+
+**Docker:** `make start` (API + UI); add LiveKit/Groq to `.env` for `voice-worker` in compose.
+
+**Tests:** `make test` or `pytest`
+
+## Deploy updates
+
+| Target | Trigger |
+|--------|---------|
+| Vercel (UI) | Push to `main` (root `frontend/`) |
+| Render (API) | Push to `main` (`docker/backend.Dockerfile`) |
+| GCP (voice) | `gcloud builds submit` + restart container on VM — [docs/gcp-voice-worker.md](docs/gcp-voice-worker.md) |
+
+## Documentation
+
+| Topic | Doc |
+|-------|-----|
+| Supabase setup | [docs/supabase.md](docs/supabase.md) |
+| Auth & consent | [docs/auth.md](docs/auth.md) |
+| Intent / LLM | [docs/intent.md](docs/intent.md) |
+| Voice (LiveKit) | [docs/voice.md](docs/voice.md) |
+| Vercel + Render | [docs/deployment.md](docs/deployment.md) |
+| Voice on GCP | [docs/gcp-voice-worker.md](docs/gcp-voice-worker.md) |
+| Evaluation (DeepEval) | [docs/evaluation.md](docs/evaluation.md) |
+| Day 1 milestone | [docs/day-1.md](docs/day-1.md) |
+
+## Repo layout
+
+```text
+backend/          FastAPI + LangGraph agent
+frontend/         Vite + React
+voice_worker/     LiveKit voice agent
+deploy/gcp/       GCP voice worker scripts
+datasets/         Eval cases
+tests/
+docs/
 ```
-
-```bash
-make test
-make start                  # Docker: API + chat UI (http://localhost:5173)
-```
-
-Configure Supabase first: [docs/supabase.md](docs/supabase.md).
-
-Optional voice: [docs/voice.md](docs/voice.md) (LiveKit + `voice_worker`).
-
-Evaluation UI + DeepEval: [docs/evaluation.md](docs/evaluation.md).
-
-Production (Vercel + Render, free tier): [docs/deployment.md](docs/deployment.md).
-
