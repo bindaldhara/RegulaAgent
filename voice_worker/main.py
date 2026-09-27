@@ -47,7 +47,7 @@ logger = logging.getLogger("regula-voice")
 # Loop-monitor "event loop blocked" warnings are common on Render free tier during
 # SSL/VAD/telemetry setup; they are not fatal. Keep Regula logs at INFO.
 logging.getLogger("livekit.agents").setLevel(logging.WARNING)
-VOICE_WORKER_BUILD = "2026-03-27-edge-tts-segment-fix"
+VOICE_WORKER_BUILD = "2026-03-27-single-greeting"
 CLIENT_AUDIO_WAIT_SEC = float(os.getenv("VOICE_CLIENT_AUDIO_WAIT_SEC", "20"))
 GREETING_PLAYOUT_TIMEOUT_SEC = float(os.getenv("VOICE_GREETING_PLAYOUT_TIMEOUT_SEC", "45"))
 _RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))
@@ -152,6 +152,7 @@ class RegulaSessionState:
         self._greeting_audio_done = False
         self._greeting_started = False
         self._greeting_lock = asyncio.Lock()
+        self._greeting_speak_lock = asyncio.Lock()
 
     def bind_session(self, session: AgentSession) -> None:
         self._session = session
@@ -175,24 +176,27 @@ class RegulaSessionState:
         if session is None:
             logger.warning("speak_greeting skipped: no session")
             return
-        try:
-            await _await_speech_playout(
-                session,
-                VOICE_GREETING,
-                allow_interruptions=False,
-            )
-            self._greeting_audio_done = True
-            logger.info("Opening greeting playout finished")
-        except asyncio.TimeoutError:
-            logger.warning("Opening greeting playout timed out")
-        except Exception:
-            logger.exception("Opening greeting TTS failed")
+        async with self._greeting_speak_lock:
+            if self._greeting_audio_done and not force:
+                return
+            try:
+                await _await_speech_playout(
+                    session,
+                    VOICE_GREETING,
+                    allow_interruptions=False,
+                )
+                self._greeting_audio_done = True
+                logger.info("Opening greeting playout finished")
+            except asyncio.TimeoutError:
+                logger.warning("Opening greeting playout timed out")
+            except Exception:
+                logger.exception("Opening greeting TTS failed")
 
     async def on_client_control(self, payload: dict[str, Any]) -> None:
         msg_type = payload.get("type")
         if msg_type == "client_audio_ready":
             self.signal_client_audio()
-        elif msg_type == "replay_greeting" and self._session is not None:
+        elif msg_type == "replay_greeting" and self._session is not None and self._greeting_audio_done:
             await self.speak_greeting(force=True)
 
     def _http_client(self) -> httpx.AsyncClient:

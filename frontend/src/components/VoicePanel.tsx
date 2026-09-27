@@ -7,7 +7,7 @@ import {
   useRoomContext,
 } from "@livekit/components-react";
 import { ConnectionState, DisconnectReason, ParticipantKind, Room, RoomEvent } from "livekit-client";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { fetchVoiceStatus, fetchVoiceToken, wakeProductionVoiceWorker } from "../api/voice";
 import type { AgentRunResponse, ChatHistoryTurn } from "../types/agent";
 import { GlassCard } from "./GlassCard";
@@ -19,16 +19,15 @@ function publishVoiceControl(room: Room, type: "client_audio_ready" | "replay_gr
   void room.localParticipant.publishData(body, { reliable: true, topic: DATA_TOPIC });
 }
 
-async function unlockSpeakerAndNotifyAgent(room: Room, replay = false) {
+async function notifyClientAudioReady(room: Room, sentRef: MutableRefObject<boolean>) {
+  if (sentRef.current) return;
+  sentRef.current = true;
   try {
     await room.startAudio();
   } catch {
-    /* banner stays visible */
+    /* banner / StartAudio may retry */
   }
   publishVoiceControl(room, "client_audio_ready");
-  if (replay) {
-    publishVoiceControl(room, "replay_greeting");
-  }
 }
 
 interface VoicePanelProps {
@@ -124,6 +123,7 @@ export function VoicePanel({
   const [agentName, setAgentName] = useState("regula-voice");
   const [awaitingGreetingAudio, setAwaitingGreetingAudio] = useState(false);
   const userEndedRef = useRef(false);
+  const clientAudioReadySentRef = useRef(false);
   const [linkDropped, setLinkDropped] = useState(false);
 
   useEffect(() => {
@@ -143,6 +143,7 @@ export function VoicePanel({
     setAgentLive(false);
     setAwaitingGreetingAudio(false);
     userEndedRef.current = false;
+    clientAudioReadySentRef.current = false;
     setStarting(true);
     try {
       if (import.meta.env.PROD) {
@@ -168,6 +169,7 @@ export function VoicePanel({
     setLinkDropped(false);
     setAgentLive(false);
     setAwaitingGreetingAudio(false);
+    clientAudioReadySentRef.current = false;
   }, []);
 
   const handleRoomDisconnected = useCallback(
@@ -223,6 +225,7 @@ export function VoicePanel({
         <StartAudio label="Enable speaker" />
         <SpeakerUnlockBanner
           awaitingGreetingAudio={awaitingGreetingAudio}
+          audioReadySentRef={clientAudioReadySentRef}
           onUnlocked={() => setAwaitingGreetingAudio(false)}
         />
         <RoomAudioRenderer />
@@ -231,6 +234,7 @@ export function VoicePanel({
           onTranscript={setLiveTranscript}
           onAgentLive={() => setAgentLive(true)}
           onAgentGreeting={() => setAwaitingGreetingAudio(true)}
+          audioReadySentRef={clientAudioReadySentRef}
         />
         <VoiceSessionStatus
           liveTranscript={liveTranscript}
@@ -299,9 +303,11 @@ export function VoicePanel({
 
 function SpeakerUnlockBanner({
   awaitingGreetingAudio,
+  audioReadySentRef,
   onUnlocked,
 }: {
   awaitingGreetingAudio: boolean;
+  audioReadySentRef: MutableRefObject<boolean>;
   onUnlocked: () => void;
 }) {
   const room = useRoomContext();
@@ -323,7 +329,7 @@ function SpeakerUnlockBanner({
     <button
       type="button"
       onClick={() => {
-        void unlockSpeakerAndNotifyAgent(room, true).then(() => {
+        void notifyClientAudioReady(room, audioReadySentRef).then(() => {
           if (room.canPlaybackAudio) {
             onUnlocked();
           }
@@ -385,13 +391,6 @@ function VoiceSessionStatus({
   const hintDelayMs = import.meta.env.PROD ? 55_000 : 12_000;
 
   useEffect(() => {
-    if (!agentConnected) return;
-    void unlockSpeakerAndNotifyAgent(room).catch(() => {
-      /* SpeakerUnlockBanner handles manual tap */
-    });
-  }, [agentConnected, room]);
-
-  useEffect(() => {
     if (agentConnected) {
       setShowHint(false);
       return;
@@ -445,11 +444,13 @@ function VoiceRoomDataBridge({
   onTranscript,
   onAgentLive,
   onAgentGreeting,
+  audioReadySentRef,
 }: {
   onAgentTurn: VoicePanelProps["onAgentTurn"];
   onTranscript: (text: string) => void;
   onAgentLive: () => void;
   onAgentGreeting: () => void;
+  audioReadySentRef: MutableRefObject<boolean>;
 }) {
   const room = useRoomContext();
 
@@ -489,7 +490,7 @@ function VoiceRoomDataBridge({
         if (data.type === "agent_greeting" && data.reply) {
           onAgentLive();
           onAgentGreeting();
-          void unlockSpeakerAndNotifyAgent(room).catch(() => {
+          void notifyClientAudioReady(room, audioReadySentRef).catch(() => {
             /* user can tap the banner */
           });
           onAgentTurn({
@@ -528,7 +529,7 @@ function VoiceRoomDataBridge({
     return () => {
       room.off(RoomEvent.DataReceived, handler);
     };
-  }, [room, onAgentTurn, onTranscript, onAgentLive, onAgentGreeting]);
+  }, [room, onAgentTurn, onTranscript, onAgentLive, onAgentGreeting, audioReadySentRef]);
 
   return null;
 }

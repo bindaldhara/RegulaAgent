@@ -75,7 +75,7 @@ Details: [docs/deployment.md](docs/deployment.md) · Voice: [docs/voice.md](docs
 | Voice (LiveKit) | [docs/voice.md](docs/voice.md) |
 | Vercel + Render | [docs/deployment.md](docs/deployment.md) |
 | Voice on GCP | [docs/gcp-voice-worker.md](docs/gcp-voice-worker.md) |
-| Evaluation (DeepEval) | [docs/evaluation.md](docs/evaluation.md) |
+| Evaluation (`/admin`, DeepEval) | [docs/evaluation.md](docs/evaluation.md) |
 | Day 1 milestone | [docs/day-1.md](docs/day-1.md) |
 
 ## Repo layout
