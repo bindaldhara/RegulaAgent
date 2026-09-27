@@ -290,8 +290,8 @@ function VoiceSessionStatus({
       <VoiceControls
         onDisconnect={onDisconnect}
         agentConnected={agentConnected}
-        liveTranscript={liveTranscript}
         showEndButton={showEndButton}
+        liveTranscript={liveTranscript}
       />
       {showHint && !agentConnected ? (
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">

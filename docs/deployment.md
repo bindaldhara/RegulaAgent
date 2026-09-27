@@ -27,6 +27,10 @@ Update `OPENROUTER_APP_URL` to your Vercel production URL after the frontend is 
 
 Free Render services spin down after inactivity; the first request after idle can take ~30–60s.
 
+### Private GitHub repo
+
+Render must be allowed to clone `bindaldhara/RegulaAgent`: [Render → Account Settings → GitHub](https://dashboard.render.com/u/settings#integrations) → configure access and enable this repository. Then create the web service (or re-run deploy from the dashboard).
+
 ## Vercel — frontend
 
 - **Project:** linked to `bindaldhara/RegulaAgent`, root directory `frontend`
