@@ -1,6 +1,6 @@
 import { motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
-import { runAgent } from "../api/agent";
+import { runAgentStream } from "../api/agentStream";
 import { signOut } from "../api/auth";
 import { AmbientBackground } from "../components/AmbientBackground";
 import { ChatPanel } from "../components/ChatPanel";
@@ -19,6 +19,23 @@ function newId() {
   return crypto.randomUUID();
 }
 
+const VOICE_STEP_STATUS: Partial<Record<WorkflowStep, string>> = {
+  intent: "Understanding intent…",
+  identity: "Checking identity…",
+  consent: "Checking consent…",
+  policy: "Applying policy…",
+  tool: "Running scheduling tools…",
+  response: "Preparing response…",
+  end: "Finishing up…",
+};
+
+function voiceStreamStatus(payload: {
+  status?: string;
+  currentStep?: WorkflowStep;
+}): string | undefined {
+  return payload.status ?? (payload.currentStep ? VOICE_STEP_STATUS[payload.currentStep] : undefined);
+}
+
 export function HomePage() {
   const [patient, setPatient] = useState<PatientProfile | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -28,6 +45,7 @@ export function HomePage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<AgentRunResponse | null>(null);
   const [currentStep, setCurrentStep] = useState<WorkflowStep | undefined>();
+  const [voiceStreaming, setVoiceStreaming] = useState(false);
 
   useEffect(() => {
     clearAccessToken();
@@ -42,16 +60,6 @@ export function HomePage() {
     content: m.content,
   }));
 
-  const applyAgentResponse = useCallback((response: AgentRunResponse) => {
-    setConversationId(response.conversation_id);
-    setLastRun(response);
-    setCurrentStep(response.current_step);
-    setMessages((prev) => [
-      ...prev,
-      { id: newId(), role: "assistant", content: response.reply, runId: response.run_id },
-    ]);
-  }, []);
-
   const sendMessage = useCallback(async () => {
     const text = draft.trim();
     if (!text || loading) return;
@@ -64,21 +72,168 @@ export function HomePage() {
     setDraft("");
     setLoading(true);
 
-    setMessages((prev) => [...prev, { id: newId(), role: "user", content: text }]);
+    const assistantId = newId();
+    setMessages((prev) => [
+      ...prev,
+      { id: newId(), role: "user", content: text },
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+        streamStatus: "Starting…",
+      },
+    ]);
+
+    const patchAssistant = (patch: Partial<ChatMessage>) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? { ...m, ...patch } : m)),
+      );
+    };
 
     try {
-      const response = await runAgent({
-        message: text,
-        conversation_id: conversationId,
-        chat_history: [...chatHistory, { role: "user", content: text }],
-      });
-      applyAgentResponse(response);
+      await runAgentStream(
+        {
+          message: text,
+          conversation_id: conversationId,
+          chat_history: [...chatHistory, { role: "user", content: text }],
+        },
+        {
+          onStep: (step) => setCurrentStep(step),
+          onStatus: (message) => patchAssistant({ streamStatus: message }),
+          onToken: (chunk) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? { ...m, content: m.content + chunk, streamStatus: undefined }
+                  : m,
+              ),
+            );
+          },
+          onDone: (response) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content: response.reply,
+                      runId: response.run_id,
+                      streaming: false,
+                      streamStatus: undefined,
+                    }
+                  : m,
+              ),
+            );
+            setConversationId(response.conversation_id);
+            setLastRun(response);
+            setCurrentStep(response.current_step);
+          },
+        },
+      );
     } catch (err) {
+      setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
     }
-  }, [applyAgentResponse, chatHistory, conversationId, draft, loading, patient]);
+  }, [chatHistory, conversationId, draft, loading, patient]);
+
+  const handleVoiceStream = useCallback(
+    (payload: {
+      userMessage: string;
+      reply: string;
+      status?: string;
+      currentStep?: WorkflowStep;
+    }) => {
+      setVoiceStreaming(true);
+      const streamLabel = voiceStreamStatus(payload);
+      if (import.meta.env.DEV) {
+        console.debug("[voice stream]", payload.currentStep ?? "-", streamLabel ?? "-", payload.reply.length);
+      }
+      if (payload.currentStep) {
+        setCurrentStep(payload.currentStep);
+      }
+      setLastRun((prev) => {
+        const step = payload.currentStep ?? prev?.current_step ?? "intent";
+        const base: AgentRunResponse =
+          prev ?? {
+            conversation_id: conversationId ?? "",
+            run_id: `voice-stream-${crypto.randomUUID()}`,
+            reply: "",
+            current_step: "intent",
+            identity_status: patient ? "verified" : "unverified",
+            consent_status: patient?.consent_granted ? "granted" : "pending",
+            handoff_state: "none",
+            audit_event_count: 0,
+            intent: null,
+            policy: null,
+            proposed_action: null,
+            tool_result: null,
+          };
+        return {
+          ...base,
+          current_step: step,
+          reply: payload.reply || base.reply,
+        };
+      });
+      setMessages((prev) => {
+        const userText = payload.userMessage.trim();
+        let userIdx = -1;
+        for (let i = prev.length - 1; i >= 0; i -= 1) {
+          const m = prev[i];
+          if (m.role === "user" && m.content.trim() === userText) {
+            userIdx = i;
+            break;
+          }
+        }
+        const patchAssistant = (assistantIdx: number) =>
+          prev.map((m, i) =>
+            i === assistantIdx
+              ? {
+                  ...m,
+                  content: payload.reply,
+                  streamStatus: streamLabel ?? m.streamStatus,
+                  streaming: true,
+                }
+              : m,
+          );
+
+        if (userIdx >= 0) {
+          const assistantIdx = userIdx + 1;
+          if (assistantIdx < prev.length && prev[assistantIdx]?.role === "assistant") {
+            return patchAssistant(assistantIdx);
+          }
+          const assistantId = newId();
+          return [
+            ...prev.slice(0, userIdx + 1),
+            {
+              id: assistantId,
+              role: "assistant" as const,
+              content: payload.reply,
+              streamStatus: streamLabel,
+              streaming: true,
+            },
+            ...prev.slice(userIdx + 1),
+          ];
+        }
+
+        const userId = newId();
+        const assistantId = newId();
+        return [
+          ...prev,
+          { id: userId, role: "user" as const, content: userText },
+          {
+            id: assistantId,
+            role: "assistant" as const,
+            content: payload.reply,
+            streamStatus: streamLabel,
+            streaming: true,
+          },
+        ];
+      });
+    },
+    [conversationId, patient],
+  );
 
   const handleVoiceTurn = useCallback(
     (payload: {
@@ -87,6 +242,7 @@ export function HomePage() {
       conversationId?: string;
       run?: Partial<AgentRunResponse>;
     }) => {
+      setVoiceStreaming(false);
       setMessages((prev) => {
         let next = prev;
         if (payload.userMessage) {
@@ -97,8 +253,19 @@ export function HomePage() {
             : [...next, { id: newId(), role: "user" as const, content: payload.userMessage }];
         }
         const lastAfter = next[next.length - 1];
-        if (lastAfter?.role === "assistant" && lastAfter.content === payload.reply) {
-          return next;
+        if (lastAfter?.role === "assistant") {
+          if (lastAfter.content === payload.reply && !lastAfter.streaming) {
+            return next;
+          }
+          return [
+            ...next.slice(0, -1),
+            {
+              ...lastAfter,
+              content: payload.reply,
+              streaming: false,
+              streamStatus: undefined,
+            },
+          ];
         }
         return [...next, { id: newId(), role: "assistant" as const, content: payload.reply }];
       });
@@ -217,11 +384,16 @@ export function HomePage() {
             conversationId={conversationId}
             chatHistory={chatHistory}
             onVoiceTurn={handleVoiceTurn}
+            onVoiceStream={handleVoiceStream}
           />
         </motion.div>
 
         <motion.div className="lg:col-span-3" variants={fadeUp}>
-          <RuntimePanel lastRun={lastRun} loading={loading} patient={patient} />
+          <RuntimePanel
+            lastRun={lastRun}
+            loading={loading || voiceStreaming}
+            patient={patient}
+          />
         </motion.div>
       </motion.main>
     </div>

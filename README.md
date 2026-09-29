@@ -9,7 +9,7 @@ Policy-bounded healthcare appointment scheduling agent: chat and voice share the
 | Component | Platform | Role |
 |-----------|----------|------|
 | **Frontend** | [Vercel](https://vercel.com) | React UI; `/api/*` proxied to the backend |
-| **API** | [Render](https://render.com) (`regula-agent-api`) | FastAPI: auth, chat, `POST /api/v1/agent/run`, voice token + agent dispatch |
+| **API** | [Render](https://render.com) (`regula-agent-api`) | FastAPI: auth, chat, `POST /api/v1/agent/run` (+ `/run/stream` SSE), voice token + agent dispatch |
 | **Voice worker** | [GCP Compute Engine](https://cloud.google.com/compute) | LiveKit agent: STT → API → TTS (see [docs/gcp-voice-worker.md](docs/gcp-voice-worker.md)) |
 | **Postgres + Auth** | [Supabase](https://supabase.com) | Users, profiles, consent |
 | **WebRTC** | [LiveKit Cloud](https://livekit.io) | Browser ↔ agent audio and data channel |

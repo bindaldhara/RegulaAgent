@@ -1,7 +1,7 @@
 """
 LiveKit voice worker for RegulaAgent.
 
-Committed user turns → POST /api/v1/agent/run → TTS reply.
+Committed user turns → POST /api/v1/agent/run/stream (SSE) → TTS reply.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from livekit.agents.llm import StopResponse
 from livekit.plugins import silero
 
 from audio_providers import build_stt_tts
+from regula_stream import call_regula_json, call_regula_stream
 from speech_text import text_for_tts
 
 _root_env = Path(__file__).resolve().parent.parent / ".env"
@@ -47,7 +48,16 @@ logger = logging.getLogger("regula-voice")
 # Loop-monitor "event loop blocked" warnings are common on Render free tier during
 # SSL/VAD/telemetry setup; they are not fatal. Keep Regula logs at INFO.
 logging.getLogger("livekit.agents").setLevel(logging.WARNING)
-VOICE_WORKER_BUILD = "2026-03-27-single-greeting"
+VOICE_WORKER_BUILD = "2026-03-29-stream-v4"
+STREAM_STEP_LABELS: dict[str, str] = {
+    "intent": "Understanding intent…",
+    "identity": "Checking identity…",
+    "consent": "Checking consent…",
+    "policy": "Applying policy…",
+    "tool": "Running scheduling tools…",
+    "response": "Preparing response…",
+    "end": "Finishing up…",
+}
 CLIENT_AUDIO_WAIT_SEC = float(os.getenv("VOICE_CLIENT_AUDIO_WAIT_SEC", "20"))
 GREETING_PLAYOUT_TIMEOUT_SEC = float(os.getenv("VOICE_GREETING_PLAYOUT_TIMEOUT_SEC", "45"))
 _RENDER_HTTP_PORT = int(os.getenv("PORT", "8081"))
@@ -61,7 +71,8 @@ VOICE_GREETING = (
 )
 VOICE_FILLER = os.getenv("VOICE_FILLER", "One moment.")
 VOICE_HISTORY_TURNS = int(os.getenv("VOICE_HISTORY_TURNS", "8"))
-_HTTP_TIMEOUT = float(os.getenv("VOICE_HTTP_TIMEOUT", "60"))
+_HTTP_TIMEOUT = float(os.getenv("VOICE_HTTP_TIMEOUT", "90"))
+VOICE_USE_STREAM = os.getenv("VOICE_USE_STREAM", "true").lower() in ("1", "true", "yes")
 
 
 def prewarm(proc: JobProcess) -> None:
@@ -230,6 +241,13 @@ class RegulaSessionState:
                     reliable=False,
                 )
             )
+            await self._publish_stream_ui(
+                text,
+                status="Understanding your request…",
+                reply="",
+                seq=0,
+                wait=True,
+            )
             if VOICE_FILLER:
                 _fire_say(
                     session,
@@ -293,6 +311,77 @@ class RegulaSessionState:
             if os.getenv("VOICE_WAIT_PLAYOUT", "").lower() in ("1", "true", "yes"):
                 await handle.wait_for_playout()
 
+    def _stream_payload(
+        self,
+        user_message: str,
+        *,
+        status: str | None = None,
+        step: str | None = None,
+        reply: str | None = None,
+        seq: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "agent_stream",
+            "user_message": user_message,
+        }
+        if status:
+            payload["status"] = status
+        if step:
+            payload["current_step"] = step
+        if reply is not None:
+            payload["reply"] = reply if len(reply) <= 8000 else reply[-8000:]
+        if seq is not None:
+            payload["seq"] = seq
+        return payload
+
+    async def _publish_stream_ui(
+        self,
+        user_message: str,
+        *,
+        status: str | None = None,
+        step: str | None = None,
+        reply: str | None = None,
+        seq: int | None = None,
+        wait: bool = False,
+    ) -> None:
+        payload = self._stream_payload(
+            user_message,
+            status=status,
+            step=step,
+            reply=reply,
+            seq=seq,
+        )
+
+        async def _send() -> None:
+            ok = await _publish_data(self.room, payload, reliable=True)
+            if not ok:
+                logger.warning("agent_stream not delivered (type=%s seq=%s)", payload.get("status"), seq)
+
+        if wait:
+            await _send()
+        else:
+            asyncio.create_task(_send())
+
+    def _schedule_stream_ui(
+        self,
+        user_message: str,
+        *,
+        status: str | None = None,
+        step: str | None = None,
+        reply: str | None = None,
+        seq: int | None = None,
+    ) -> None:
+        asyncio.create_task(
+            self._publish_stream_ui(
+                user_message,
+                status=status,
+                step=step,
+                reply=reply,
+                seq=seq,
+                wait=True,
+            )
+        )
+
     async def _call_regula(self, user_message: str) -> tuple[str, dict[str, Any]]:
         access_token = self.meta.get("access_token")
         if not access_token:
@@ -319,20 +408,78 @@ class RegulaSessionState:
             "Content-Type": "application/json",
         }
         client = self._http_client()
-        response = await client.post(
-            f"{REGULA_BACKEND_URL}/api/v1/agent/run",
-            headers=headers,
-            json=payload,
-        )
-        if response.status_code >= 400:
-            logger.warning("Regula API %s: %s", response.status_code, response.text[:300])
-            return (
-                "I could not reach the scheduling service. Check that the API is running.",
-                {},
-            )
-        data = response.json()
+        stream_url = f"{REGULA_BACKEND_URL}/api/v1/agent/run/stream"
+        json_url = f"{REGULA_BACKEND_URL}/api/v1/agent/run"
 
-        reply = str(data.get("reply") or "Done.")
+        reply_parts: list[str] = []
+        stream_seq = 1
+
+        async def on_status(message: str) -> None:
+            nonlocal stream_seq
+            logger.info("voice stream status: %s", message[:80])
+            stream_seq += 1
+            self._schedule_stream_ui(
+                user_message,
+                status=message,
+                reply="".join(reply_parts),
+                seq=stream_seq,
+            )
+
+        async def on_step(step: str) -> None:
+            nonlocal stream_seq
+            logger.info("voice stream step: %s", step)
+            label = STREAM_STEP_LABELS.get(step.lower(), f"Step: {step}…")
+            stream_seq += 1
+            self._schedule_stream_ui(
+                user_message,
+                step=step,
+                status=label,
+                reply="".join(reply_parts),
+                seq=stream_seq,
+            )
+
+        async def on_token(token: str) -> None:
+            nonlocal stream_seq
+            reply_parts.append(token)
+            stream_seq += 1
+            self._schedule_stream_ui(
+                user_message,
+                reply="".join(reply_parts),
+                seq=stream_seq,
+            )
+
+        try:
+            if VOICE_USE_STREAM:
+                logger.info("Regula voice stream → %s", stream_url)
+                data = await call_regula_stream(
+                    client,
+                    stream_url,
+                    headers,
+                    payload,
+                    on_status=on_status,
+                    on_step=on_step,
+                    on_token=on_token,
+                )
+            else:
+                data = await call_regula_json(client, json_url, headers, payload)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.warning("stream endpoint missing; falling back to /run")
+                data = await call_regula_json(client, json_url, headers, payload)
+            else:
+                raise
+        except Exception as exc:
+            logger.warning("Regula stream failed (%s); falling back to /run", exc, exc_info=True)
+            try:
+                data = await call_regula_json(client, json_url, headers, payload)
+            except Exception:
+                logger.warning("Regula API fallback failed")
+                return (
+                    "I could not reach the scheduling service. Check that the API is running.",
+                    {},
+                )
+
+        reply = str(data.get("reply") or "".join(reply_parts) or "Done.")
         new_conversation_id = data.get("conversation_id")
         if new_conversation_id:
             self.meta["conversation_id"] = new_conversation_id
@@ -388,10 +535,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
     agent_name = os.getenv("LIVEKIT_AGENT_NAME", "regula-voice")
     logger.info(
-        "Regula voice worker joining room=%s agent_name=%s backend=%s build=%s",
+        "Regula voice worker joining room=%s agent_name=%s backend=%s stream=%s build=%s",
         ctx.room.name,
         agent_name,
         REGULA_BACKEND_URL,
+        VOICE_USE_STREAM,
         VOICE_WORKER_BUILD,
     )
 

@@ -79,6 +79,7 @@ Required env vars (Production + Preview):
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
+- `VITE_API_BASE_URL` — e.g. `https://regula-agent-api.onrender.com` (enables chat **streaming**; see [chat-ui.md](chat-ui.md))
 
 In Supabase → Authentication → URL configuration, add your Vercel site URL to **Site URL** and **Redirect URLs**.
 
@@ -86,7 +87,16 @@ If the Render service URL differs from `regula-agent-api.onrender.com`, update t
 
 ## Deploy updates
 
-Push to `main`. Render and Vercel auto-deploy when connected to the GitHub repo.
+Push to `main`. **Render** (`regula-agent-api`) and **Vercel** (`frontend/`) auto-deploy when connected to the GitHub repo.
+
+**Voice worker on GCP** does not auto-deploy from GitHub — rebuild the image and restart the VM container (see [gcp-voice-worker.md](gcp-voice-worker.md#updates-after-code-changes)).
+
+### Order (Vercel + Render + GCP voice)
+
+1. Push `main` → wait for **Render API** deploy (health: `curl https://regula-agent-api.onrender.com/health`).
+2. Confirm **Vercel** production env: `VITE_API_BASE_URL=https://regula-agent-api.onrender.com` (chat SSE), `VITE_VOICE_WAKE_URL=http://YOUR_GCE_IP:8080/` (optional wake).
+3. **GCP:** `gcloud builds submit` voice image → SSH VM → `vm-install-voice.sh` with `VOICE_IMAGE=...:latest`.
+4. In worker logs, confirm `build=2026-03-29-stream-v4` and `stream=True` after a voice turn.
 
 ### Admin eval (`/admin`)
 

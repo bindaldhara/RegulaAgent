@@ -1,6 +1,6 @@
 # Voice (LiveKit)
 
-Voice uses **LiveKit** for WebRTC audio and a **voice worker** that calls the same `POST /api/v1/agent/run` path as chat (policy, tools, audit unchanged).
+Voice uses **LiveKit** for WebRTC audio and a **voice worker** that calls **`POST /api/v1/agent/run/stream`** (SSE), same workflow as chat streaming (policy, tools, audit unchanged). Falls back to `/run` if the stream route is missing.
 
 ## Architecture
 
@@ -11,6 +11,8 @@ Browser (mic) ──WebRTC──► LiveKit room ◄── voice worker (STT / t
 ```
 
 Final transcripts call RegulaAgent directly; scheduling stays in the API (policy + tools). The worker speaks replies with TTS (`session.say`) after each API response — chat text is synced separately on the `regula.agent` data channel.
+
+**Streaming in the browser:** Voice does **not** call `/run/stream` from the page (only the worker does). Progress appears via LiveKit **`agent_stream`** messages: the chat bubble shows status/steps/reply chunks, the voice card shows an **Agent** line, and the runtime panel spins while `voiceStreaming` is active. DevTools **Network** will only show the LiveKit WebSocket, not the SSE URL.
 
 ## Default audio (free)
 
@@ -37,12 +39,14 @@ Paid alternates: `VOICE_AUDIO_MODE=openai|openrouter|livekit` (see `.env.example
 | `VOICE_FILLER` | voice worker | Short phrase while the API runs (default `One moment.`) |
 | `VOICE_TTS_MAX_CHARS` | voice worker | Cap spoken reply length (default `1200`) |
 | `VOICE_GROQ_STT_MODEL` | voice worker | Default `whisper-large-v3-turbo`; use `whisper-large-v3` for max accuracy |
+| `VOICE_USE_STREAM` | voice worker | Default `true` — SSE `/run/stream`; `false` forces `/run` only |
+| `VOICE_HTTP_TIMEOUT` | voice worker | Default `90` (seconds) for Regula HTTP client |
 
 Add the same LiveKit vars to `.env` (see `.env.example`).
 
 ### Latency
 
-Voice calls use `voice_mode: true` on `POST /api/v1/agent/run` (skips Postgres audit persistence per turn). List replies (slots, appointments) are the same full text as chat; long speech is capped only by `VOICE_TTS_MAX_CHARS` in the worker. The worker reuses one HTTP connection, plays a brief filler while scheduling runs, starts TTS in parallel with chat sync, and uses faster Groq STT by default. Worker logs include `api_ms=` and `total_ms=` per turn.
+Voice calls use `voice_mode: true` on the stream (or fallback `/run`) request (skips Postgres audit persistence per turn). The worker publishes **`agent_stream`** on the LiveKit data channel (**reliable**) with status, workflow step, and partial reply; **`agent_turn`** still fires once with the full run payload before TTS. Rebuild/restart the voice worker after API stream changes (`VOICE_WORKER_BUILD` in logs). List replies (slots, appointments) are the same full text as chat; long speech is capped only by `VOICE_TTS_MAX_CHARS` in the worker. The worker reuses one HTTP connection, plays a brief filler while scheduling runs, starts TTS in parallel with chat sync, and uses faster Groq STT by default. Worker logs include `api_ms=` and `total_ms=` per turn.
 
 ## Troubleshooting (nothing happens when you speak)
 
@@ -75,7 +79,23 @@ If it still happens: open the browser **console** for the error, confirm chat st
 
 1. Configure LiveKit Cloud (or local server) and set `.env`.
 2. API: `pip install -r backend/requirements.txt` and run uvicorn as usual.
-3. Worker (separate terminal):
+3. Worker (separate terminal) — see commands below.
+
+### Voice streaming on localhost (checklist)
+
+Voice streaming is **not** a browser request to `/run/stream`. You should see:
+
+- Chat: user bubble, then assistant bubble with gray status (e.g. “Understanding your request…”) and a violet cursor while the API runs.
+- Voice card (above the input): **Agent** line with the same status.
+- Runtime panel: loading while the turn runs.
+- Browser console (dev only): `[voice agent_stream]` and `[voice stream]` lines when `agent_stream` arrives.
+
+If you only see the final reply:
+
+1. **Restart the voice worker** after code changes (`docker compose restart voice-worker` or stop/start `python main.py dev`). Confirm logs show `build=2026-03-29-stream-v4` and `stream=True`.
+2. **Backend must expose** `POST /api/v1/agent/run/stream` on the URL the worker uses (`REGULA_BACKEND_URL` — `http://backend:8000` in Compose, `http://localhost:8000` if the worker runs on the host).
+3. **`docker compose logs -f voice-worker`** — look for `Regula voice stream →`, then `voice stream status:` / `voice stream step:`. If you see `Regula stream failed` / fallback to `/run`, fix API reachability or auth (sign in on the site so the worker gets `access_token` in job metadata).
+4. **Hard refresh** the frontend (`Cmd+Shift+R`) so `VoicePanel` / `HomePage` stream handlers are current.
 
    ```bash
    cd voice_worker

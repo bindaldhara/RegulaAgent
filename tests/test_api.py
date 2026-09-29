@@ -26,3 +26,18 @@ def test_agent_run_endpoint() -> None:
     body = response.json()
     assert body["reply"]
     assert body["intent"]["intent"] == "SEARCH_DOCTOR"
+
+
+def test_agent_run_stream_endpoint() -> None:
+    client = TestClient(app)
+    with client.stream(
+        "POST",
+        "/api/v1/agent/run/stream",
+        json={"message": "Find a dentist tomorrow."},
+    ) as response:
+        assert response.status_code == 200
+        body = response.read().decode()
+    assert "event: step" in body
+    assert "event: token" in body
+    assert "event: done" in body
+    assert "SEARCH_DOCTOR" in body

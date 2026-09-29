@@ -93,4 +93,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   runId?: string;
+  /** Assistant reply still arriving via SSE tokens */
+  streaming?: boolean;
+  /** Shown while the workflow runs before reply tokens arrive */
+  streamStatus?: string;
 }

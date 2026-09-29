@@ -26,6 +26,12 @@ interface ChatPanelProps {
     conversationId?: string;
     run?: Partial<AgentRunResponse>;
   }) => void;
+  onVoiceStream?: (payload: {
+    userMessage: string;
+    reply: string;
+    status?: string;
+    currentStep?: WorkflowStep;
+  }) => void;
 }
 
 export function ChatPanel({
@@ -41,9 +47,17 @@ export function ChatPanel({
   conversationId,
   chatHistory,
   onVoiceTurn,
+  onVoiceStream,
 }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const reduce = useReducedMotion();
+  const assistantHasStreamFeedback = messages.some(
+    (m) =>
+      m.role === "assistant" &&
+      m.streaming &&
+      (m.content.length > 0 || Boolean(m.streamStatus)),
+  );
+  const showThinking = loading && !assistantHasStreamFeedback;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
@@ -98,11 +112,23 @@ export function ChatPanel({
                     : "border border-white/10 bg-black/40 text-zinc-100 whitespace-pre-wrap"
                 }`}
               >
-                {msg.content}
+                {!msg.content && msg.streamStatus ? (
+                  <span className="text-ms-muted">{msg.streamStatus}</span>
+                ) : (
+                  <>
+                    {msg.content}
+                    {msg.role === "assistant" && msg.streamStatus ? (
+                      <span className="mt-1 block text-[11px] text-ms-muted">{msg.streamStatus}</span>
+                    ) : null}
+                  </>
+                )}
+                {msg.role === "assistant" && msg.streaming && msg.content ? (
+                  <span className="ml-0.5 inline-block animate-pulse text-violet-300">▍</span>
+                ) : null}
               </div>
             </motion.div>
           ))}
-          {loading && <ThinkingIndicator key="thinking" />}
+          {showThinking && <ThinkingIndicator key="thinking" />}
         </AnimatePresence>
         <div ref={bottomRef} />
       </div>
@@ -127,6 +153,7 @@ export function ChatPanel({
           conversationId={conversationId}
           chatHistory={chatHistory}
           onAgentTurn={onVoiceTurn}
+          onAgentStream={onVoiceStream}
           disabled={loading}
           footer={(voiceControl) => (
             <div className="flex gap-2">

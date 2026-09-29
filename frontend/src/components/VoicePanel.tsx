@@ -3,6 +3,7 @@ import {
   RoomAudioRenderer,
   StartAudio,
   useConnectionState,
+  useDataChannel,
   useRemoteParticipants,
   useRoomContext,
 } from "@livekit/components-react";
@@ -41,6 +42,12 @@ interface VoicePanelProps {
     conversationId?: string;
     run?: Partial<AgentRunResponse>;
   }) => void;
+  onAgentStream?: (payload: {
+    userMessage: string;
+    reply: string;
+    status?: string;
+    currentStep?: AgentRunResponse["current_step"];
+  }) => void;
   disabled?: boolean;
   /** Renders Start/End voice beside Send; active session UI stays above the row. */
   footer?: (voiceControl: ReactNode) => ReactNode;
@@ -50,11 +57,13 @@ function VoiceControls({
   onDisconnect,
   agentConnected,
   liveTranscript,
+  agentStreamHint,
   showEndButton = true,
 }: {
   onDisconnect: () => void;
   agentConnected: boolean;
   liveTranscript: string;
+  agentStreamHint?: string | null;
   showEndButton?: boolean;
 }) {
   const room = useRoomContext();
@@ -101,6 +110,12 @@ function VoiceControls({
           {liveTranscript || "Speak after the greeting…"}
         </p>
       </div>
+      {agentStreamHint ? (
+        <div className="rounded-lg border border-violet-400/25 bg-violet-500/10 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wider text-violet-200/80">Agent</p>
+          <p className="text-sm text-violet-100">{agentStreamHint}</p>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -111,6 +126,7 @@ export function VoicePanel({
   conversationId,
   chatHistory,
   onAgentTurn,
+  onAgentStream,
   disabled,
   footer,
 }: VoicePanelProps) {
@@ -125,6 +141,7 @@ export function VoicePanel({
   const userEndedRef = useRef(false);
   const clientAudioReadySentRef = useRef(false);
   const [linkDropped, setLinkDropped] = useState(false);
+  const [agentStreamHint, setAgentStreamHint] = useState<string | null>(null);
 
   useEffect(() => {
     fetchVoiceStatus()
@@ -139,6 +156,7 @@ export function VoicePanel({
     if (!signedIn || starting || disabled) return;
     setError(null);
     setLiveTranscript("");
+    setAgentStreamHint(null);
     setLinkDropped(false);
     setAgentLive(false);
     setAwaitingGreetingAudio(false);
@@ -166,11 +184,41 @@ export function VoicePanel({
     userEndedRef.current = true;
     setSession(null);
     setLiveTranscript("");
+    setAgentStreamHint(null);
     setLinkDropped(false);
     setAgentLive(false);
     setAwaitingGreetingAudio(false);
     clientAudioReadySentRef.current = false;
   }, []);
+
+  const handleAgentStream = useCallback(
+    (payload: {
+      userMessage: string;
+      reply: string;
+      status?: string;
+      currentStep?: AgentRunResponse["current_step"];
+    }) => {
+      const hint =
+        payload.status ||
+        (payload.reply.trim() ? "Streaming reply into chat…" : "Working on your request…");
+      setAgentStreamHint(hint);
+      onAgentStream?.(payload);
+    },
+    [onAgentStream],
+  );
+
+  const handleAgentTurn = useCallback(
+    (payload: {
+      userMessage: string;
+      reply: string;
+      conversationId?: string;
+      run?: Partial<AgentRunResponse>;
+    }) => {
+      setAgentStreamHint(null);
+      onAgentTurn(payload);
+    },
+    [onAgentTurn],
+  );
 
   const handleRoomDisconnected = useCallback(
     (reason?: DisconnectReason) => {
@@ -230,7 +278,8 @@ export function VoicePanel({
         />
         <RoomAudioRenderer />
         <VoiceRoomDataBridge
-          onAgentTurn={onAgentTurn}
+          onAgentTurn={handleAgentTurn}
+          onAgentStream={handleAgentStream}
           onTranscript={setLiveTranscript}
           onAgentLive={() => setAgentLive(true)}
           onAgentGreeting={() => setAwaitingGreetingAudio(true)}
@@ -238,6 +287,7 @@ export function VoicePanel({
         />
         <VoiceSessionStatus
           liveTranscript={liveTranscript}
+          agentStreamHint={agentStreamHint}
           agentName={agentName}
           agentLive={agentLive}
           onDisconnect={endVoice}
@@ -351,12 +401,14 @@ function SpeakerUnlockBanner({
 
 function VoiceSessionStatus({
   liveTranscript,
+  agentStreamHint,
   agentName,
   agentLive,
   onDisconnect,
   showEndButton = true,
 }: {
   liveTranscript: string;
+  agentStreamHint?: string | null;
   agentName: string;
   agentLive: boolean;
   onDisconnect: () => void;
@@ -411,6 +463,7 @@ function VoiceSessionStatus({
         agentConnected={agentConnected}
         showEndButton={showEndButton}
         liveTranscript={liveTranscript}
+        agentStreamHint={agentStreamHint}
       />
       {showHint && !agentConnected ? (
         <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
@@ -446,29 +499,39 @@ function VoiceSessionStatus({
 
 function VoiceRoomDataBridge({
   onAgentTurn,
+  onAgentStream,
   onTranscript,
   onAgentLive,
   onAgentGreeting,
   audioReadySentRef,
 }: {
   onAgentTurn: VoicePanelProps["onAgentTurn"];
+  onAgentStream?: VoicePanelProps["onAgentStream"];
   onTranscript: (text: string) => void;
   onAgentLive: () => void;
   onAgentGreeting: () => void;
   audioReadySentRef: MutableRefObject<boolean>;
 }) {
   const room = useRoomContext();
+  const handlersRef = useRef({
+    onAgentTurn,
+    onAgentStream,
+    onTranscript,
+    onAgentLive,
+    onAgentGreeting,
+  });
+  handlersRef.current = {
+    onAgentTurn,
+    onAgentStream,
+    onTranscript,
+    onAgentLive,
+    onAgentGreeting,
+  };
 
-  useEffect(() => {
-    const handler = (
-      payload: Uint8Array,
-      _participant?: unknown,
-      _kind?: unknown,
-      topic?: string,
-    ) => {
-      if (topic && topic !== DATA_TOPIC) return;
+  const onDataMessage = useCallback(
+    (msg: { payload: Uint8Array }) => {
       try {
-        const text = new TextDecoder().decode(payload);
+        const text = new TextDecoder().decode(msg.payload);
         const data = JSON.parse(text) as {
           type?: string;
           text?: string;
@@ -484,21 +547,44 @@ function VoiceRoomDataBridge({
           tool_result?: AgentRunResponse["tool_result"];
           identity_status?: AgentRunResponse["identity_status"];
           consent_status?: AgentRunResponse["consent_status"];
+          status?: string;
+          seq?: number;
         };
 
+        if (data.type === "agent_stream" && data.user_message) {
+          handlersRef.current.onAgentLive();
+          if (import.meta.env.DEV) {
+            console.debug("[voice agent_stream]", data.seq, data.status ?? data.current_step, data.reply?.length ?? 0);
+          }
+          handlersRef.current.onAgentStream?.({
+            userMessage: data.user_message,
+            reply: data.reply ?? "",
+            status: data.status,
+            currentStep: data.current_step,
+          });
+          return;
+        }
+
         if (data.type === "transcript" && data.text) {
-          onAgentLive();
-          onTranscript(data.final ? data.text : `${data.text}…`);
+          handlersRef.current.onAgentLive();
+          handlersRef.current.onTranscript(data.final ? data.text : `${data.text}…`);
+          if (data.final) {
+            handlersRef.current.onAgentStream?.({
+              userMessage: data.text,
+              reply: "",
+              status: "Understanding your request…",
+            });
+          }
           return;
         }
 
         if (data.type === "agent_greeting" && data.reply) {
-          onAgentLive();
-          onAgentGreeting();
+          handlersRef.current.onAgentLive();
+          handlersRef.current.onAgentGreeting();
           void notifyClientAudioReady(room, audioReadySentRef).catch(() => {
             /* user can tap the banner */
           });
-          onAgentTurn({
+          handlersRef.current.onAgentTurn({
             userMessage: "",
             reply: data.reply,
           });
@@ -506,9 +592,9 @@ function VoiceRoomDataBridge({
         }
 
         if (data.type !== "agent_turn" || !data.user_message || !data.reply) return;
-        onAgentLive();
-        onTranscript(data.user_message);
-        onAgentTurn({
+        handlersRef.current.onAgentLive();
+        handlersRef.current.onTranscript(data.user_message);
+        handlersRef.current.onAgentTurn({
           userMessage: data.user_message,
           reply: data.reply,
           conversationId: data.conversation_id,
@@ -528,13 +614,11 @@ function VoiceRoomDataBridge({
       } catch {
         /* ignore */
       }
-    };
+    },
+    [room, audioReadySentRef],
+  );
 
-    room.on(RoomEvent.DataReceived, handler);
-    return () => {
-      room.off(RoomEvent.DataReceived, handler);
-    };
-  }, [room, onAgentTurn, onTranscript, onAgentLive, onAgentGreeting, audioReadySentRef]);
+  useDataChannel(DATA_TOPIC, onDataMessage);
 
   return null;
 }
