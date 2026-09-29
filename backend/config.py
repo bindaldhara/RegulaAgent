@@ -7,8 +7,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # mock = regex (tests); openrouter = LLM; auto = LLM when OPENROUTER_API_KEY is set
+    # mock | jev | openrouter | auto — see docs/intent.md
     agent_provider: str = "auto"
+
+    typesafe_api_key: str | None = None
+    typesafe_model: str = "jev-latest"
+    # JEV on OpenRouter (System One API); see https://openrouter.ai/~typesafe/jev-latest
+    openrouter_jev_model: str = "~typesafe/jev-latest"
 
     supabase_url: str = ""
     supabase_jwt_secret: str = ""
@@ -17,6 +22,8 @@ class Settings(BaseSettings):
     openrouter_model: str = "openai/gpt-4o-mini"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_app_url: str = "http://localhost:5173"
+    # Intent OpenRouter chat calls (structured output); avoid infinite hang on slow models
+    intent_openrouter_timeout_seconds: float = 45.0
 
     # G-Eval judge (defaults to openrouter_model). Prefer a paid mini model over :free for JSON scoring.
     eval_judge_model: str | None = None

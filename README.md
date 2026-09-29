@@ -86,8 +86,9 @@ Eval uses the **same `AGENT_PROVIDER` as the API** (not a separate mock override
 
 | `AGENT_PROVIDER` | Eval agent behavior |
 |------------------|---------------------|
-| **`auto`** (typical) | OpenRouter LLM intent when `OPENROUTER_API_KEY` is set |
-| **`openrouter`** | Always LLM intent |
+| **`auto`** (typical) | JEV → OpenRouter LLM (`OPENROUTER_MODEL`) → mock |
+| **`jev`** | TypeSafe JEV intent |
+| **`openrouter`** | OpenRouter structured LLM intent |
 | **`mock`** | Regex intent only (stable, no intent API cost) |
 
 G-Eval (reply judge) always uses `OPENROUTER_API_KEY` or `OPENAI_API_KEY`; optional `EVAL_JUDGE_MODEL`. See [docs/evaluation.md](docs/evaluation.md).

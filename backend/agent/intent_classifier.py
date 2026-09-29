@@ -1,4 +1,4 @@
-"""Intent classification: LLM (OpenRouter) with mock regex fallback for tests."""
+"""Intent classification: JEV (TypeSafe), OpenRouter LLM, or mock regex fallback."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from config import Settings, get_settings
 from schemas.enums import Intent
 from schemas.intent import ExtractedEntities, IntentClassification
 from services.doctor_matching import extract_preferred_hour, resolve_doctor_from_message
+from services.intent_jev import classify_intent_jev, jev_available, resolve_jev_client_config
 from services.intent_llm import INTENT_SYSTEM, classify_intent_openrouter
 from services.scheduling_intent import extract_date_phrase, is_slots_request
 from services.scheduling_slots import SEED_DOCTORS
@@ -53,15 +54,61 @@ _PROTECTED_DATA_PATTERNS = (
 _APPOINTMENT_REF_RE = re.compile(r"^appt\d+$", re.I)
 
 
-def use_mock_intent_classifier(settings: Settings | None = None) -> bool:
+def _openrouter_llm_available(cfg: Settings) -> bool:
+    return bool(cfg.openrouter_api_key)
+
+
+def _intent_backend_chain(cfg: Settings) -> str:
+    """Preference order: JEV → OpenRouter chat LLM → mock regex."""
+    if jev_available(cfg):
+        return "jev"
+    if _openrouter_llm_available(cfg):
+        return "openrouter"
+    return "mock"
+
+
+def intent_classifier_backend(settings: Settings | None = None) -> str:
+    """Returns mock, jev, or openrouter."""
     cfg = settings or get_settings()
     mode = cfg.agent_provider.lower().strip()
     if mode == "mock":
-        return True
+        return "mock"
+    if mode in ("jev", "typesafe"):
+        return _intent_backend_chain(cfg)
     if mode in ("openrouter", "llm"):
-        return not bool(cfg.openrouter_api_key)
-    # auto
-    return not bool(cfg.openrouter_api_key)
+        return "openrouter" if _openrouter_llm_available(cfg) else "mock"
+    return _intent_backend_chain(cfg)
+
+
+def use_mock_intent_classifier(settings: Settings | None = None) -> bool:
+    return intent_classifier_backend(settings) == "mock"
+
+
+def _intent_classifier_label(cfg: Settings, backend: str) -> str:
+    if backend == "mock":
+        return "mock (regex)"
+    if backend == "openrouter":
+        return f"openrouter LLM ({cfg.openrouter_model})"
+    if backend == "jev":
+        jev_cfg = resolve_jev_client_config(cfg)
+        if jev_cfg and "openrouter.ai" in jev_cfg.base_url:
+            return f"jev / OpenRouter ({jev_cfg.model})"
+        if jev_cfg:
+            return f"jev / TypeSafe ({jev_cfg.model})"
+        return "jev"
+    return backend
+
+
+def _log_intent_classifier(label: str, result: IntentClassification | None = None) -> None:
+    if result is None:
+        line = f"[intent] classifier={label}"
+    else:
+        line = (
+            f"[intent] classifier={label} -> {result.intent.value} "
+            f"confidence={result.confidence:.2f}"
+        )
+    print(line, flush=True)
+    logger.info("%s", line)
 
 
 def _extract_specialty(text: str) -> str | None:
@@ -259,13 +306,37 @@ def classify_intent(
         return safety
 
     if use_mock_intent_classifier(cfg):
-        return classify_intent_mock(user_message)
+        label = _intent_classifier_label(cfg, "mock")
+        result = classify_intent_mock(user_message)
+        _log_intent_classifier(label, result)
+        return result
+
+    backend = intent_classifier_backend(cfg)
+    label = _intent_classifier_label(cfg, backend)
+
+    def _run(backend_name: str) -> IntentClassification:
+        if backend_name == "jev":
+            raw = classify_intent_jev(user_message, chat_history, cfg)
+        else:
+            raw = classify_intent_openrouter(
+                user_message, chat_history, cfg, system_prompt=INTENT_SYSTEM
+            )
+        return _normalize_llm_entities(raw, user_message, chat_history)
 
     try:
-        result = classify_intent_openrouter(
-            user_message, chat_history, cfg, system_prompt=INTENT_SYSTEM
-        )
-        return _normalize_llm_entities(result, user_message, chat_history)
+        result = _run(backend)
+        _log_intent_classifier(label, result)
+        return result
     except Exception:
-        logger.exception("LLM intent classification failed; falling back to mock rules")
-        return classify_intent_mock(user_message)
+        logger.exception("%s intent classification failed", backend)
+        if backend == "jev" and _openrouter_llm_available(cfg):
+            or_label = _intent_classifier_label(cfg, "openrouter")
+            try:
+                result = _run("openrouter")
+                _log_intent_classifier(f"{or_label} (jev failed → openrouter)", result)
+                return result
+            except Exception:
+                logger.exception("openrouter intent classification failed after jev")
+        result = classify_intent_mock(user_message)
+        _log_intent_classifier(f"{label} (failed → mock)", result)
+        return result

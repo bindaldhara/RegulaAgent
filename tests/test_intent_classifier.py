@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from agent.intent_classifier import classify_intent
+from agent.intent_classifier import classify_intent, intent_classifier_backend
 from config import get_settings
 from schemas.enums import Intent
 
@@ -81,6 +84,90 @@ def test_slots_for_sophia_mehta_extracts_doctor() -> None:
     assert result.intent == Intent.LIST_AVAILABLE_SLOTS
     assert result.entities.doctor_name == "Dr. Sofia Mehta"
     assert result.entities.date == "tomorrow"
+
+
+def test_auto_prefers_jev_when_typesafe_key_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PROVIDER", "auto")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    get_settings.cache_clear()
+    assert intent_classifier_backend() == "jev"
+
+
+def test_auto_uses_jev_via_openrouter_when_only_or_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PROVIDER", "auto")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    get_settings.cache_clear()
+    assert intent_classifier_backend() == "jev"
+
+
+def test_auto_openrouter_llm_when_jev_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PROVIDER", "auto")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    get_settings.cache_clear()
+    with patch("agent.intent_classifier.jev_available", return_value=False):
+        assert intent_classifier_backend() == "openrouter"
+
+
+def test_jev_maps_choice_to_intent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PROVIDER", "jev")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-test-key")
+    get_settings.cache_clear()
+
+    choice_answer = SimpleNamespace(
+        choice="list_available_slots",
+        confidence=0.91,
+        probabilities={"list_available_slots": 0.91},
+    )
+    mock_response = SimpleNamespace(
+        choices={"intent": choice_answer},
+        nouls={
+            "medical_emergency": SimpleNamespace(noul=0.0),
+            "unauthorized_records": SimpleNamespace(noul=0.0),
+        },
+    )
+    mock_client = MagicMock()
+    mock_client.system_one.return_value = mock_response
+    mock_client.__enter__.return_value = mock_client
+
+    with patch("services.intent_jev.TypeSafeClient", return_value=mock_client) as client_cls:
+        result = classify_intent("What times are open for Dr. Ana Rivera tomorrow?")
+
+    client_cls.assert_called_once()
+    assert client_cls.call_args.kwargs["base_url"] == "https://api.typesafe.ai"
+    assert result.intent == Intent.LIST_AVAILABLE_SLOTS
+    assert result.confidence >= 0.9
+    assert result.entities.doctor_name == "Dr. Ana Rivera"
+
+
+def test_jev_via_openrouter_client_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PROVIDER", "jev")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_JEV_MODEL", "~typesafe/jev-latest")
+    get_settings.cache_clear()
+
+    choice_answer = SimpleNamespace(choice="book_appointment", confidence=0.88, probabilities={})
+    mock_response = SimpleNamespace(
+        choices={"intent": choice_answer},
+        nouls={
+            "medical_emergency": SimpleNamespace(noul=0.0),
+            "unauthorized_records": SimpleNamespace(noul=0.0),
+        },
+    )
+    mock_client = MagicMock()
+    mock_client.system_one.return_value = mock_response
+    mock_client.__enter__.return_value = mock_client
+
+    with patch("services.intent_jev.TypeSafeClient", return_value=mock_client) as client_cls:
+        result = classify_intent("Book a cardiologist tomorrow.")
+
+    kwargs = client_cls.call_args.kwargs
+    assert kwargs["base_url"] == "https://openrouter.ai/api"
+    assert kwargs["model"] == "~typesafe/jev-latest"
+    assert result.intent == Intent.BOOK_APPOINTMENT
 
 
 def test_cancel_does_not_extract_of_as_appointment_id() -> None:

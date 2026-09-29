@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 from schemas.intent import IntentClassification
 from services.scheduling_slots import SEED_DOCTORS
 
@@ -41,8 +44,21 @@ def classify_intent_openrouter(
     if not cfg.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY required for LLM intent classification")
 
+    model_id = (cfg.openrouter_model or "").strip()
+    lower_model = model_id.lower()
+    if "jev" in lower_model or "typesafe/" in lower_model or lower_model.startswith("~typesafe/"):
+        raise RuntimeError(
+            f"OPENROUTER_MODEL={model_id!r} is a JEV/System One model, not a chat model. "
+            "Use AGENT_PROVIDER=auto or jev for JEV, or set OPENROUTER_MODEL to e.g. openai/gpt-4o-mini"
+        )
+
+    timeout = cfg.intent_openrouter_timeout_seconds
+    line = f"[intent] OpenRouter LLM request model={model_id} timeout={timeout}s"
+    print(line, flush=True)
+    logger.info("%s", line)
+
     model = ChatOpenAI(
-        model=cfg.openrouter_model,
+        model=model_id,
         api_key=cfg.openrouter_api_key,
         base_url=cfg.openrouter_base_url,
         default_headers={
@@ -50,18 +66,22 @@ def classify_intent_openrouter(
             "X-Title": "RegulaAgent",
         },
         temperature=0,
+        timeout=timeout,
+        max_retries=1,
     )
     structured = model.with_structured_output(IntentClassification)
     payload = {
         "conversation": _format_history(chat_history),
         "current_message": user_message,
     }
-    return structured.invoke(
+    result = structured.invoke(
         [
             SystemMessage(content=system_prompt),
             HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
         ]
     )
+    print(f"[intent] OpenRouter LLM response received model={model_id}", flush=True)
+    return result
 
 
 def build_intent_system_prompt() -> str:
